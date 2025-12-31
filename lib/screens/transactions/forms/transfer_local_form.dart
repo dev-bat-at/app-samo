@@ -8,7 +8,6 @@ import 'dart:developer' as developer; // Added import
 import '../../notification_service.dart';
 import 'package:flutter/services.dart';
 import '../../text_scanner_screen.dart';
-import '../../../helpers/error_handler.dart';
 
 // Utility class for caching product names
 class CacheUtil {
@@ -648,6 +647,26 @@ class _TransferLocalFormState extends State<TransferLocalForm> {
     );
   }
 
+  // Retry helper function
+  Future<T> _retry<T>(Future<T> Function() fn, {String? operation}) async {
+    const maxRetries = 3;
+    const retryDelay = Duration(seconds: 1);
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (attempt == maxRetries - 1) {
+          if (e is PostgrestException) {
+            throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: PostgrestException(message: ${e.message}, code: ${e.code}, details: ${e.details}, hint: ${e.hint})');
+          }
+          throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: $e');
+        }
+        await Future.delayed(retryDelay * math.pow(2, attempt).toInt());
+      }
+    }
+    throw Exception('${operation ?? 'Operation'} failed: Unexpected error');
+  }
+
   // Save transfer to Supabase
   Future<void> saveTransfer(List<String> imeiList) async {
     if (isSubmitting) return;
@@ -672,66 +691,28 @@ class _TransferLocalFormState extends State<TransferLocalForm> {
       developer.log('Creating snapshot for ticket $ticketId with ${imeiList.length} IMEIs');
       final snapshotData = await _createSnapshot(ticketId, imeiList);
 
-      // Get warehouse_id from first IMEI
-      String? originWarehouseId;
-      if (imeiList.isNotEmpty) {
-        final firstImeiData = await supabase
-            .from('products')
-            .select('warehouse_id')
-            .eq('imei', imeiList.first)
-            .maybeSingle();
-        originWarehouseId = firstImeiData?['warehouse_id']?.toString();
+      // ✅ CALL RPC FUNCTION - All operations in ONE atomic transaction
+      developer.log('Calling create_transfer_local_transaction RPC for ${imeiList.length} IMEIs');
+      
+      final result = await _retry(
+        () => supabase.rpc('create_transfer_local_transaction', params: {
+          'p_ticket_id': ticketId,
+          'p_product_id': productId,
+          'p_product_name': CacheUtil.getProductName(productId),
+          'p_transporter': transporter!,
+          'p_imei_list': imeiList,
+          'p_snapshot_data': snapshotData,
+          'p_created_at': now.toIso8601String(),
+        }),
+        operation: 'Create transfer local transaction (RPC)',
+      );
+
+      // Check result
+      if (result == null || result['success'] != true) {
+        throw Exception('RPC function returned error: ${result?['message'] ?? 'Unknown error'}');
       }
 
-      // Prepare transporter order data
-      final transporterOrder = {
-        'id': ticketId,
-        'imei': imeiList.join(','),
-        'product_id': productId,
-        'transporter': transporter,
-        'transport_fee': 0,
-        'type': 'chuyển kho nội địa',
-        'warehouse_id': originWarehouseId,
-        'created_at': now.toIso8601String(),
-        'iscancelled': false,
-      };
-
-      // Prepare batch updates for products
-      const batchSize = 1000;
-      final batches = <List<String>>[];
-      developer.log('Preparing batches for ${imeiList.length} IMEIs with batch size $batchSize');
-      for (var i = 0; i < imeiList.length; i += batchSize) {
-        final endIndex = math.min(i + batchSize, imeiList.length);
-        batches.add(imeiList.sublist(i, endIndex));
-        developer.log('Created batch from index $i to $endIndex with ${batches.last.length} IMEIs');
-      }
-
-      // Execute operations directly instead of using execute_transaction RPC
-      developer.log('Executing operations with ${batches.length} batches');
-
-      // Insert snapshot
-      await supabase.from('snapshots').insert({
-        'ticket_id': ticketId,
-        'ticket_table': 'transporter_orders',
-        'snapshot_data': snapshotData,
-        'created_at': now.toIso8601String(),
-      });
-
-      // Insert transporter order
-      await supabase.from('transporter_orders').insert(transporterOrder);
-
-      // Update products in batches
-      for (var batch in batches) {
-        developer.log('Updating products for batch with ${batch.length} IMEIs');
-        await supabase
-            .from('products')
-            .update({
-              'status': 'đang vận chuyển',
-              'transporter': transporter,
-              'send_transfer_date': now.toIso8601String(),
-            })
-            .inFilter('imei', batch);
-      }
+      developer.log('✅ Transfer local transaction created successfully via RPC!');
 
       // Send push notification
       await NotificationService.showNotification(
@@ -746,6 +727,18 @@ class _TransferLocalFormState extends State<TransferLocalForm> {
         "Đã tạo phiếu vận chuyển nội địa",
         "Đã tạo phiếu vận chuyển nội địa sản phẩm ${CacheUtil.getProductName(productId)} số lượng ${formatNumberLocal(imeiList.length)}",
         data: {'type': 'transfer_local_created'},
+      );
+      
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'transfer_local',
+        type: 'Phiếu Chuyển Kho Nội Địa',
+        ticketId: ticketId,
+        partnerType: 'transporters',
+        partnerName: transporter,
+        productName: CacheUtil.getProductName(productId),
+        quantity: imeiList.length,
+        imeiList: imeiList.join(', '),
       );
 
       if (mounted) {

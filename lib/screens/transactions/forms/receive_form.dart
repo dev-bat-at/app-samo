@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
+import 'dart:math' as math;
 import '../../notification_service.dart';
 import '../../../helpers/error_handler.dart';
 import '../../../helpers/cache_helper.dart';
@@ -66,6 +68,27 @@ class _ReceiveFormState extends State<ReceiveForm> {
   List<String> accounts = [];
 
   final TextEditingController amountController = TextEditingController();
+  final uuid = const Uuid();
+
+  // Retry helper function
+  Future<T> _retry<T>(Future<T> Function() fn, {String? operation}) async {
+    const maxRetries = 3;
+    const retryDelay = Duration(seconds: 1);
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (attempt == maxRetries - 1) {
+          if (e is PostgrestException) {
+            throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: PostgrestException(message: ${e.message}, code: ${e.code}, details: ${e.details}, hint: ${e.hint})');
+          }
+          throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: $e');
+        }
+        await Future.delayed(retryDelay * math.pow(2, attempt).toInt());
+      }
+    }
+    throw Exception('${operation ?? 'Operation'} failed: Unexpected error');
+  }
 
   @override
   void initState() {
@@ -526,32 +549,61 @@ class _ReceiveFormState extends State<ReceiveForm> {
                     isProcessing = true;
                   });
                   try {
-                    final financialOrderResponse =
-                        await widget.tenantClient
-                            .from('financial_orders')
-                            .insert({
-                              'type': 'receive',
-                              'partner_type': getPartnerTypeForDB(partnerType!),
-                              'partner_name': partnerName!,
-                              'partner_id': partnerId,
-                              'amount': amount,
-                              'currency': currency!,
-                              'account': account!,
-                              'note': note ?? '',
-                              'created_at': DateTime.now().toIso8601String(),
-                            })
-                            .select()
-                            .single();
-
-                    final ticketId = financialOrderResponse['id'].toString();
+                    final now = DateTime.now();
+                    final ticketId = uuid.v4();
+                    
+                    // Calculate debt change: với customers thì trừ công nợ, với các loại khác thì cộng
+                    final debtChange = isCustomer ? -amount! : amount!;
+                    
+                    // Account balance change: cộng vào (thu tiền)
+                    final accountBalanceChange = amount!;
 
                     final snapshotData = await _createSnapshot(ticketId);
-                    await widget.tenantClient.from('snapshots').insert({
-                      'ticket_id': ticketId,
-                      'ticket_table': 'financial_orders',
-                      'snapshot_data': snapshotData,
-                      'created_at': DateTime.now().toIso8601String(),
-                    });
+
+                    // ✅ CALL RPC FUNCTION - All operations in ONE atomic transaction
+                    final result = await _retry(
+                      () => widget.tenantClient.rpc('create_receive_transaction', params: {
+                        'p_ticket_id': ticketId,
+                        'p_type': 'receive',
+                        'p_partner_type': getPartnerTypeForDB(partnerType!),
+                        'p_partner_name': partnerName!,
+                        'p_partner_id': partnerId,
+                        'p_amount': amount!,
+                        'p_currency': currency!,
+                        'p_account': account!,
+                        'p_note': note ?? '',
+                        'p_debt_column': debtColumn,
+                        'p_debt_change': debtChange,
+                        'p_account_balance_change': accountBalanceChange,
+                        'p_snapshot_data': snapshotData,
+                        'p_created_at': now.toIso8601String(),
+                      }),
+                      operation: 'Create receive transaction (RPC)',
+                    );
+
+                    // Check result
+                    if (result == null || result['success'] != true) {
+                      throw Exception('RPC function returned error: ${result?['message'] ?? 'Unknown error'}');
+                    }
+
+                    print('✅ Receive transaction created successfully via RPC!');
+
+                    // Lấy số dư cuối từ tài khoản
+                    String? finalBalanceStr;
+                    try {
+                      final accountData = await widget.tenantClient
+                          .from('financial_accounts')
+                          .select('balance')
+                          .eq('name', account!)
+                          .eq('currency', currency!)
+                          .maybeSingle();
+                      if (accountData != null) {
+                        final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+                        finalBalanceStr = formatNumberLocal(balance);
+                      }
+                    } catch (e) {
+                      print('⚠️ Không thể lấy số dư cuối: $e');
+                    }
 
                     await NotificationService.showNotification(
                       134, // Unique ID for this type of notification
@@ -566,24 +618,20 @@ class _ReceiveFormState extends State<ReceiveForm> {
                       "Đã tạo phiếu thu tiền cho $partnerName với số tiền ${formatNumberLocal(amount!)} $currency",
                       data: {'type': 'receive_created'},
                     );
-
-                    if ((partnerType == 'Khách hàng' || partnerType == 'Nhà cung cấp' || partnerType == 'Đơn vị fix lỗi') && partnerId != null) {
-                      await widget.tenantClient
-                          .from(table)
-                          .update({debtColumn: newDebt})
-                          .eq('id', partnerId!);
-                    } else {
-                      await widget.tenantClient
-                          .from(table)
-                          .update({debtColumn: newDebt})
-                          .eq('name', partnerName!);
-                    }
-
-                    await widget.tenantClient
-                        .from('financial_accounts')
-                        .update({'balance': balance + amount!})
-                        .eq('name', account!)
-                        .eq('currency', currency!);
+                    
+                    // ✅ Gửi thông báo Telegram với thông tin chi tiết
+                    await NotificationService.sendTransactionToTelegram(
+                      transactionType: 'receive',
+                      type: 'Phiếu Thu',
+                      ticketId: ticketId,
+                      partnerType: getPartnerTypeForDB(partnerType!),
+                      partnerName: partnerName,
+                      totalAmount: formatNumberLocal(amount!),
+                      currency: currency,
+                      account: account,
+                      finalBalance: finalBalanceStr,
+                      note: note,
+                    );
 
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Tạo phiếu thu thành công')),

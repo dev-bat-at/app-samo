@@ -763,7 +763,7 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
 
       dynamic financialOrdersQuery = widget.tenantClient
           .from('financial_orders')
-          .select('id, amount, currency, created_at, account, note')
+          .select('id, amount, currency, created_at, account, note, type')
           .eq('partner_type', 'customers')
           .eq('partner_id', customerId)
           .eq('iscancelled', false);
@@ -808,7 +808,18 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
 
       final financialOrders = (results[1] as List<dynamic>)
           .cast<Map<String, dynamic>>()
-          .map((order) => {...order, 'type': 'Thu Tiền Đối Tác'})
+          .map((order) {
+            final orderType = order['type']?.toString() ?? '';
+            String displayType;
+            if (orderType == 'payment') {
+              displayType = 'Chi đối tác';
+            } else if (orderType == 'receive') {
+              displayType = 'Thu đối tác';
+            } else {
+              displayType = 'Thu Tiền Đối Tác'; // Fallback cho các loại khác
+            }
+            return {...order, 'type': displayType};
+          })
           .toList();
       developer.log('Financial Orders: ${financialOrders.length}, First order: ${financialOrders.isNotEmpty ? financialOrders.first : "none"}');
 
@@ -896,7 +907,7 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
 
         final financialOrdersFuture = widget.tenantClient
             .from('financial_orders')
-            .select('id, amount, currency, created_at, account, note')
+            .select('id, amount, currency, created_at, account, note, type')
             .eq('partner_type', 'customers')
             .eq('partner_id', customerId)
             .eq('iscancelled', false)
@@ -921,7 +932,18 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
             .toList();
         final financialOrders = (results[1] as List<dynamic>)
             .cast<Map<String, dynamic>>()
-            .map((order) => {...order, 'type': 'Thu Tiền Đối Tác'})
+            .map((order) {
+              final orderType = order['type']?.toString() ?? '';
+              String displayType;
+              if (orderType == 'payment') {
+                displayType = 'Chi đối tác';
+              } else if (orderType == 'receive') {
+                displayType = 'Thu đối tác';
+              } else {
+                displayType = 'Thu Tiền Đối Tác'; // Fallback cho các loại khác
+              }
+              return {...order, 'type': displayType};
+            })
             .toList();
         final reimportOrders = (results[2] as List<dynamic>)
             .cast<Map<String, dynamic>>()
@@ -1096,7 +1118,7 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
                 }
               } else {
                 // Cột text
-                cell.value = TextCellValue(value);
+              cell.value = TextCellValue(value);
               }
               
               cell.cellStyle = isMultiline ? styles.multiline : styles.centered;
@@ -1145,7 +1167,7 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
               }
             } else {
               // Cột text
-              cell.value = TextCellValue(value);
+            cell.value = TextCellValue(value);
             }
             
             cell.cellStyle = isMultiline ? styles.multiline : styles.centered;
@@ -1349,7 +1371,7 @@ class _CustomerDetailsDialogState extends State<CustomerDetailsDialog> {
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (type != 'Thu Tiền Đối Tác') ...[
+                            if (type != 'Chi đối tác' && type != 'Thu đối tác' && type != 'Thu Tiền Đối Tác') ...[
                               Text('Sản phẩm: $productName'),
                               if (imei.isNotEmpty) Text('IMEI: $imei'),
                               if (quantity.isNotEmpty) Text('Số lượng: $quantity'),

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
+import 'dart:math' as math;
 import '../../notification_service.dart';
 import '../../../helpers/error_handler.dart';
 
@@ -50,6 +52,27 @@ class _CostFormState extends State<CostForm> {
   List<String> accounts = [];
 
   final TextEditingController amountController = TextEditingController();
+  final uuid = const Uuid();
+
+  // Retry helper function
+  Future<T> _retry<T>(Future<T> Function() fn, {String? operation}) async {
+    const maxRetries = 3;
+    const retryDelay = Duration(seconds: 1);
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (attempt == maxRetries - 1) {
+          if (e is PostgrestException) {
+            throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: PostgrestException(message: ${e.message}, code: ${e.code}, details: ${e.details}, hint: ${e.hint})');
+          }
+          throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: $e');
+        }
+        await Future.delayed(retryDelay * math.pow(2, attempt).toInt());
+      }
+    }
+    throw Exception('${operation ?? 'Operation'} failed: Unexpected error');
+  }
 
   @override
   void initState() {
@@ -183,29 +206,53 @@ class _CostFormState extends State<CostForm> {
                     isProcessing = true;
                   });
                   try {
-                    final financialOrderResponse =
-                        await widget.tenantClient
-                            .from('financial_orders')
-                            .insert({
-                              'type': 'cost',
-                              'amount': amount,
-                              'currency': currency,
-                              'account': account,
-                              'note': note,
-                              'created_at': DateTime.now().toIso8601String(),
-                            })
-                            .select()
-                            .single();
-
-                    final ticketId = financialOrderResponse['id'].toString();
+                    final now = DateTime.now();
+                    final ticketId = uuid.v4();
+                    
+                    // Account balance change: trừ đi (chi phí)
+                    final accountBalanceChange = -amount!;
 
                     final snapshotData = await _createSnapshot(ticketId);
-                    await widget.tenantClient.from('snapshots').insert({
-                      'ticket_id': ticketId,
-                      'ticket_table': 'financial_orders',
-                      'snapshot_data': snapshotData,
-                      'created_at': DateTime.now().toIso8601String(),
-                    });
+
+                    // ✅ CALL RPC FUNCTION - All operations in ONE atomic transaction
+                    final result = await _retry(
+                      () => widget.tenantClient.rpc('create_cost_transaction', params: {
+                        'p_ticket_id': ticketId,
+                        'p_cost_type': 'cost',
+                        'p_amount': amount!,
+                        'p_currency': currency!,
+                        'p_account': account!,
+                        'p_note': note ?? '',
+                        'p_account_balance_change': accountBalanceChange,
+                        'p_snapshot_data': snapshotData,
+                        'p_created_at': now.toIso8601String(),
+                      }),
+                      operation: 'Create cost transaction (RPC)',
+                    );
+
+                    // Check result
+                    if (result == null || result['success'] != true) {
+                      throw Exception('RPC function returned error: ${result?['message'] ?? 'Unknown error'}');
+                    }
+
+                    print('✅ Cost transaction created successfully via RPC!');
+
+                    // Lấy số dư cuối từ tài khoản
+                    String? finalBalanceStr;
+                    try {
+                      final accountData = await widget.tenantClient
+                          .from('financial_accounts')
+                          .select('balance')
+                          .eq('name', account!)
+                          .eq('currency', currency!)
+                          .maybeSingle();
+                      if (accountData != null) {
+                        final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+                        finalBalanceStr = formatNumberLocal(balance);
+                      }
+                    } catch (e) {
+                      print('⚠️ Không thể lấy số dư cuối: $e');
+                    }
 
                     await NotificationService.showNotification(
                       128, // Unique ID for this type of notification
@@ -221,12 +268,17 @@ class _CostFormState extends State<CostForm> {
                       data: {'type': 'cost_created'},
                     );
 
-                    final newBalance = balance - amount!;
-                    await widget.tenantClient
-                        .from('financial_accounts')
-                        .update({'balance': newBalance})
-                        .eq('name', account!)
-                        .eq('currency', currency!);
+                    // ✅ Gửi thông báo Telegram với thông tin chi tiết
+                    await NotificationService.sendTransactionToTelegram(
+                      transactionType: 'cost',
+                      type: 'Phiếu Chi Phí',
+                      ticketId: ticketId,
+                      totalAmount: formatNumberLocal(amount!),
+                      currency: currency,
+                      account: account,
+                      finalBalance: finalBalanceStr,
+                      note: note,
+                    );
 
                     if (mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(

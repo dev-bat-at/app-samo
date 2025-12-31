@@ -746,6 +746,37 @@ class _ReturnSummaryState extends State<ReturnSummary> {
       });
       final firstProductName = widget.ticketItems.isNotEmpty ? widget.ticketItems.first['product_name'] as String : 'Không xác định';
 
+      // Lấy số dư cuối từ tài khoản (nếu không phải Công nợ)
+      String? finalBalanceStr;
+      if (account != null && account != 'Công nợ' && primaryCurrency != null) {
+        try {
+          final accountData = await supabase
+              .from('financial_accounts')
+              .select('balance')
+              .eq('name', account!)
+              .eq('currency', primaryCurrency!)
+              .maybeSingle();
+          if (accountData != null) {
+            final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+            finalBalanceStr = NumberFormat('#,###', 'vi_VN').format(balance).replaceAll(',', '.');
+          }
+        } catch (e) {
+          debugPrint('⚠️ Không thể lấy số dư cuối: $e');
+        }
+      }
+      
+      // Lấy danh sách IMEI và tính tổng hóa đơn
+      final imeiList = widget.ticketItems
+          .map((item) => item['imei'] as String)
+          .join(', ');
+      final totalAmount = widget.ticketItems.fold<double>(
+        0.0,
+        (sum, item) {
+          final imeiCount = (item['imei'] as String).split(',').where((e) => e.trim().isNotEmpty).length;
+          return sum + ((item['price'] as num?)?.toDouble() ?? 0.0) * imeiCount;
+        },
+      );
+      
       debugPrint('Sending notification');
       await NotificationService.showNotification(
         137,
@@ -759,6 +790,22 @@ class _ReturnSummaryState extends State<ReturnSummary> {
         'Phiếu Trả Hàng Đã Tạo',
         'Đã trả hàng sản phẩm $firstProductName số lượng $totalQuantity',
         data: {'type': 'return_created'},
+      );
+      
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'return',
+        type: 'Phiếu Trả Hàng',
+        ticketId: ticketId,
+        productName: firstProductName,
+        quantity: totalQuantity,
+        imeiList: imeiList,
+        totalAmount: NumberFormat('#,###', 'vi_VN').format(totalAmount).replaceAll(',', '.'),
+        currency: primaryCurrency ?? widget.currency,
+        paymentMethod: account ?? 'Công nợ',
+        account: account != 'Công nợ' ? account : null,
+        finalBalance: finalBalanceStr,
+        note: widget.ticketItems.isNotEmpty ? (widget.ticketItems.first['note'] as String?) : null,
       );
 
       if (mounted) {

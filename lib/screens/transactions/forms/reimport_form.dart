@@ -259,6 +259,36 @@ class _ReimportFormState extends State<ReimportForm> {
     });
   }
 
+  // ✅ Helper function: Kiểm tra lần bán gần nhất của IMEI có phải Ship COD không
+  Future<bool?> _checkLatestSaleIsShipCod(String imei) async {
+    try {
+      final supabase = widget.tenantClient;
+      // Query tất cả sale_orders có chứa IMEI này, sắp xếp theo thời gian gần nhất
+      final saleOrders = await supabase
+          .from('sale_orders')
+          .select('imei, account, created_at')
+          .eq('product_id', productId!)
+          .eq('iscancelled', false)
+          .like('imei', '%$imei%')
+          .order('created_at', ascending: false)
+          .limit(50); // Lấy nhiều để tìm chính xác IMEI
+
+      // Tìm sale_order chứa IMEI chính xác và gần nhất
+      for (var order in saleOrders) {
+        final imeiString = order['imei']?.toString() ?? '';
+        final imeiList = imeiString.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+        if (imeiList.contains(imei)) {
+          // Tìm thấy IMEI chính xác, kiểm tra account của lần bán này
+          return order['account'] == 'Ship COD';
+        }
+      }
+      return null; // Không tìm thấy sale_order
+    } catch (e) {
+      debugPrint('Lỗi khi kiểm tra lần bán gần nhất: $e');
+      return null;
+    }
+  }
+
   Future<void> _fetchAvailableImeis(String query) async {
     if (productId == null) {
       setState(() {
@@ -269,24 +299,46 @@ class _ReimportFormState extends State<ReimportForm> {
 
     try {
       final supabase = widget.tenantClient;
+      // ✅ Query tất cả sale_orders (không filter account) để tìm IMEI
       final response = await supabase
-          .from('products')
+          .from('sale_orders')
           .select('imei')
           .eq('product_id', productId!)
-          .eq('status', 'Đã bán')
+          .eq('iscancelled', false)
           .ilike('imei', '%$query%')
-          .limit(10);
+          .order('created_at', ascending: false)
+          .limit(100); // Lấy nhiều hơn để có đủ IMEI sau khi split và filter
 
-      final imeiListFromDb = response
-          .map((e) => e['imei'] as String?)
-          .whereType<String>()
-          .where((imei) => !addedItems.any((item) => item['imei'] == imei))
-          .toList()
-        ..sort();
+      // Extract individual IMEIs từ danh sách IMEI (có thể có nhiều IMEI trong 1 sale_order)
+      final Set<String> imeiSet = {};
+      for (var order in response) {
+        final imeiString = order['imei']?.toString() ?? '';
+        final imeiList = imeiString.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+        for (var imei in imeiList) {
+          if (imei.toLowerCase().contains(query.toLowerCase()) && 
+              !addedItems.any((item) => item['imei'] == imei) &&
+              !imeiSet.contains(imei)) {
+            imeiSet.add(imei);
+          }
+        }
+      }
+
+      // ✅ Filter: chỉ giữ lại IMEI có lần bán gần nhất KHÔNG phải Ship COD
+      final List<String> validImeis = [];
+      for (var imei in imeiSet) {
+        final isShipCod = await _checkLatestSaleIsShipCod(imei);
+        if (isShipCod == false) {
+          // Lần bán gần nhất không phải Ship COD → hợp lệ cho phiếu nhập lại hàng
+          validImeis.add(imei);
+        }
+        // Nếu isShipCod == true hoặc null, bỏ qua IMEI này
+      }
+
+      final imeiListFromDb = validImeis..sort();
 
       if (mounted) {
         setState(() {
-          imeiSuggestions = imeiListFromDb;
+          imeiSuggestions = imeiListFromDb.take(10).toList();
         });
       }
     } catch (e) {
@@ -299,6 +351,26 @@ class _ReimportFormState extends State<ReimportForm> {
     }
   }
 
+  // ✅ Helper method để hiển thị lỗi IMEI dạng popup
+  Future<void> _showImeiErrorDialog(String error) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Lỗi IMEI'),
+        content: SingleChildScrollView(
+          child: Text(error),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<String?> _checkDuplicateImeis(String input) async {
     if (addedItems.any((item) => item['imei'] == input)) {
       return 'IMEI "$input" đã được nhập!';
@@ -309,9 +381,11 @@ class _ReimportFormState extends State<ReimportForm> {
 
   Future<void> _addImeiToList(String input) async {
     if (input.trim().isEmpty || productId == null) {
+      final error = 'Vui lòng chọn sản phẩm và nhập IMEI!';
       setState(() {
-        imeiError = 'Vui lòng chọn sản phẩm và nhập IMEI!';
+        imeiError = error;
       });
+      await _showImeiErrorDialog(error);
       return;
     }
 
@@ -320,28 +394,65 @@ class _ReimportFormState extends State<ReimportForm> {
       setState(() {
         imeiError = duplicateError;
       });
+      await _showImeiErrorDialog(duplicateError);
       return;
     }
 
     try {
       final supabase = widget.tenantClient;
-      final response = await retry(
+      // ✅ Kiểm tra lần bán gần nhất của IMEI
+      final isLatestSaleShipCod = await _checkLatestSaleIsShipCod(input);
+      
+      if (isLatestSaleShipCod == true) {
+        final error = 'IMEI "$input" có lần bán gần nhất là Ship COD, vui lòng sử dụng phiếu COD Hoàn Hàng để nhập lại!';
+        setState(() {
+          imeiError = error;
+        });
+        await _showImeiErrorDialog(error);
+        return;
+      }
+      
+      if (isLatestSaleShipCod == null) {
+        final error = 'Không tìm thấy giao dịch bán cho IMEI "$input"!';
+        setState(() {
+          imeiError = error;
+        });
+        await _showImeiErrorDialog(error);
+        return;
+      }
+
+      // ✅ Lần bán gần nhất không phải Ship COD → hợp lệ
+      // Query sale_order gần nhất (không Ship COD) để lấy thông tin
+      final saleOrdersResponse = await retry(
         () => supabase
             .from('sale_orders')
-            .select('customer, customer_id, price, currency, account')
+            .select('customer, customer_id, price, currency, account, imei')
             .eq('product_id', productId!)
-            .like('imei', '%$input%')
+            .neq('account', 'Ship COD') // ✅ Loại trừ Ship COD
             .eq('iscancelled', false)
+            .like('imei', '%$input%')
             .order('created_at', ascending: false)
-            .limit(1)
-            .maybeSingle(),
+            .limit(10), // Lấy nhiều hơn để filter chính xác IMEI
         operation: 'Fetch sale order',
       );
 
-      if (response == null) {
+      // ✅ Filter để tìm sale_order chứa IMEI chính xác
+      Map<String, dynamic>? matchedOrder;
+      for (var order in saleOrdersResponse) {
+        final imeiString = order['imei']?.toString() ?? '';
+        final imeiList = imeiString.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+        if (imeiList.contains(input)) {
+          matchedOrder = order;
+          break; // Tìm thấy IMEI chính xác, dừng lại
+        }
+      }
+
+      if (matchedOrder == null) {
+        final error = 'Không tìm thấy giao dịch bán bình thường cho IMEI "$input"!';
         setState(() {
-          imeiError = 'Không tìm thấy giao dịch bán cho IMEI "$input"!';
+          imeiError = error;
         });
+        await _showImeiErrorDialog(error);
         return;
       }
 
@@ -358,14 +469,17 @@ class _ReimportFormState extends State<ReimportForm> {
       );
 
       if (productResponse == null) {
+        final error = 'Không tìm thấy thông tin sản phẩm cho IMEI "$input"!';
         setState(() {
-          imeiError = 'Không tìm thấy thông tin sản phẩm cho IMEI "$input"!';
+          imeiError = error;
         });
+        await _showImeiErrorDialog(error);
         return;
       }
 
       print('Product data for IMEI $input: $productResponse');
 
+      final response = matchedOrder; // ✅ response không thể null ở đây
       final price = response['price'] != null
           ? (response['price'] is num
               ? (response['price'] as num).toDouble()
@@ -396,9 +510,11 @@ class _ReimportFormState extends State<ReimportForm> {
       final currency = response['currency'] as String? ?? 'VND';
 
       if (price == 0) {
+        final error = 'Giá bán của IMEI "$input" không hợp lệ!';
         setState(() {
-          imeiError = 'Giá bán của IMEI "$input" không hợp lệ!';
+          imeiError = error;
         });
+        await _showImeiErrorDialog(error);
         return;
       }
 
@@ -421,7 +537,7 @@ class _ReimportFormState extends State<ReimportForm> {
             'imei': input,
             'product_id': productId,
             'product_name': CacheUtil.getProductName(productId),
-            'isCod': true,
+            'isCod': false, // ✅ Phiếu nhập lại hàng không có Ship COD
             'customer': response['customer'] as String? ?? 'Không xác định',
             'customer_id': customerId, // ✅ Lưu customer_id thay vì chỉ lưu tên
             'customer_price': customerPrice,
@@ -438,9 +554,11 @@ class _ReimportFormState extends State<ReimportForm> {
         });
       }
     } catch (e) {
+      final error = 'Lỗi khi lấy thông tin giao dịch: $e';
       setState(() {
-        imeiError = 'Lỗi khi lấy thông tin giao dịch: $e';
+        imeiError = error;
       });
+      await _showImeiErrorDialog(error);
     }
   }
 
@@ -630,9 +748,9 @@ class _ReimportFormState extends State<ReimportForm> {
       var query = supabase
           .from('sale_orders')
           .select('imei, customer, customer_id, transporter, price, currency, account, quantity')
-          .eq('product_id', productId!);
+          .eq('product_id', productId!)
+          .neq('account', 'Ship COD'); // ✅ Phiếu nhập lại hàng: chỉ lấy đơn bán bình thường (không Ship COD)
 
-      // ✅ Bao gồm cả ship COD vì ship COD vẫn là bán cho khách hàng
       final customerId = customerIdMap[cust];
       if (customerId != null) {
         query = query.eq('customer_id', customerId);
@@ -662,6 +780,17 @@ class _ReimportFormState extends State<ReimportForm> {
           // Check for duplicates in both addedItems and allItems
           if (await _checkDuplicateImeis(individualImei) != null) continue;
           if (allItems.any((item) => item['imei'] == individualImei)) continue;
+          
+          // ✅ Kiểm tra lần bán gần nhất của IMEI
+          final isLatestSaleShipCod = await _checkLatestSaleIsShipCod(individualImei);
+          if (isLatestSaleShipCod == true) {
+            print('Skipping IMEI $individualImei: Latest sale is Ship COD');
+            continue;
+          }
+          if (isLatestSaleShipCod == null) {
+            print('Skipping IMEI $individualImei: No sale order found');
+            continue;
+          }
           
           try {
             final productResponse = await retry(
@@ -730,7 +859,7 @@ class _ReimportFormState extends State<ReimportForm> {
               'sale_price': perItemPrice,
               'sale_currency': item['currency'] as String? ?? 'VND',
               'reimport_price': null,
-              'isCod': item['account'] == 'Ship COD',
+              'isCod': false, // ✅ Phiếu nhập lại hàng không có Ship COD
               'sale_date': saleDate,
             });
           } catch (e) {
@@ -831,8 +960,8 @@ class _ReimportFormState extends State<ReimportForm> {
         throw Exception('Vui lòng nhập IMEI hoặc sử dụng Auto IMEI!');
       }
       for (var item in addedItems) {
-        if (item['reimport_price'] != null && (item['reimport_price'] <= 0)) {
-          throw Exception('Giá nhập lại cho IMEI ${item['imei']} phải lớn hơn 0!');
+        if (item['reimport_price'] != null && (item['reimport_price'] < 0)) {
+          throw Exception('Giá nhập lại cho IMEI ${item['imei']} không hợp lệ!');
         }
       }
       itemsToProcess = addedItems;
@@ -956,94 +1085,59 @@ class _ReimportFormState extends State<ReimportForm> {
       }
 
       try {
+        // Prepare data for RPC function
+        final reimportOrdersList = <Map<String, dynamic>>[];
+        final productsUpdatesList = <Map<String, dynamic>>[];
+        final customersDebtChangesList = <Map<String, dynamic>>[];
+        double? accountBalanceChange;
+        
         for (var item in items) {
           final reimportPrice = item['reimport_price'] != null
               ? (item['reimport_price'] is num ? (item['reimport_price'] as num).toDouble() : 0.0)
               : (item['sale_price'] is num ? (item['sale_price'] as num).toDouble() : 0.0);
 
-          print('Inserting reimport order for IMEI ${item['imei']}, price: $reimportPrice');
-
           // ✅ Sử dụng customer_id trực tiếp từ item (đã lưu từ sale_orders)
           final customerId = item['customer_id'] as String?;
-          
-          // ✅ Luôn dùng account hiện tại (không phải COD Hoàn)
-          final accountValue = account;
-          
-          if (customerId == null || customerId.isEmpty) {
-            // Fallback: tra cứu từ customerIdMap dựa trên tên (cho backward compatibility)
-            final fallbackCustomerId = customerIdMap[item['customer']];
-            if (fallbackCustomerId == null) {
+          int finalCustomerId;
+          if (customerId != null && customerId.isNotEmpty) {
+            finalCustomerId = int.parse(customerId);
+          } else {
+            final fallbackId = customerIdMap[item['customer']];
+            if (fallbackId == null) {
             throw Exception('Không tìm thấy ID của khách hàng "${item['customer']}"!');
           }
-            // Sử dụng fallback ID
-            await retry(
-              () => supabase.from('reimport_orders').insert({
-                'ticket_id': ticketId,
-                'customer_id': int.parse(fallbackCustomerId),
-                'product_id': item['product_id'],
-                'warehouse_id': warehouseId,
-                'imei': item['imei'],
-                'quantity': 1,
-                'price': reimportPrice,
-                'currency': item['sale_currency'],
-                'account': accountValue,
-                'customer_price': null,
-                'transporter_price': null,
-                'note': note,
-                'created_at': now.toIso8601String(),
-              }),
-              operation: 'Insert reimport order for IMEI ${item['imei']}',
-            );
-          } else {
+            finalCustomerId = int.parse(fallbackId);
+          }
 
-            // ✅ Sử dụng customer_id trực tiếp từ item
-          await retry(
-            () => supabase.from('reimport_orders').insert({
+          // Prepare reimport order
+          reimportOrdersList.add({
               'ticket_id': ticketId,
-              'customer_id': int.parse(customerId),
+            'customer_id': finalCustomerId,
               'product_id': item['product_id'],
               'warehouse_id': warehouseId,
               'imei': item['imei'],
               'quantity': 1,
               'price': reimportPrice,
               'currency': item['sale_currency'],
-              'account': accountValue,
+            'account': account,
               'customer_price': null,
               'transporter_price': null,
               'note': note,
               'created_at': now.toIso8601String(),
-            }),
-            operation: 'Insert reimport order for IMEI ${item['imei']}',
-          );
-          }
+          });
 
-          await retry(
-            () => supabase.from('products').update({
+          // Prepare product update
+          productsUpdatesList.add({
+            'imei': item['imei'],
               'status': 'Tồn kho',
               'warehouse_id': warehouseId,
-              'sale_date': null,
-              'profit': null,
               'customer_price': null,
               'transporter_price': null,
-              'sale_price': null,
               'cost_price': reimportPrice,
-            }).eq('imei', item['imei']),
-            operation: 'Update product ${item['imei']}',
-          );
+          });
         }
 
-        // Save snapshot
-        await retry(
-          () => supabase.from('snapshots').insert({
-            'ticket_id': ticketId,
-            'ticket_table': 'reimport_orders',
-            'snapshot_data': snapshotData,
-            'created_at': now.toIso8601String(),
-          }),
-          operation: 'Save snapshot',
-        );
-
-        // Process financial changes
+        // Prepare customer debt changes (if account == 'Công nợ')
         if (account == 'Công nợ') {
             for (var customer in customerGroups.keys) {
               final customerItems = customerGroups[customer]!;
@@ -1062,77 +1156,65 @@ class _ReimportFormState extends State<ReimportForm> {
                             ? (item['reimport_price'] is num ? (item['reimport_price'] as num).toDouble() : 0.0)
                             : (item['sale_price'] is num ? (item['sale_price'] as num).toDouble() : 0.0)));
 
-                print('Updating debt for customer $customer, currency $saleCurrency, amount: $customerAmount');
-
-                String debtColumn;
-                if (saleCurrency == 'VND') {
-                  debtColumn = 'debt_vnd';
-                } else if (saleCurrency == 'CNY') {
-                  debtColumn = 'debt_cny';
-                } else if (saleCurrency == 'USD') {
-                  debtColumn = 'debt_usd';
-                } else {
-                  throw Exception('Loại tiền tệ không được hỗ trợ: $saleCurrency cho IMEI ${itemsByCurrency.first['imei']}');
-                }
-
-                // ✅ Lấy customer_id từ item đầu tiên (tất cả items trong group đều cùng customer_id)
                 final customerId = itemsByCurrency.first['customer_id'] as String?;
-                if (customerId == null || customerId.isEmpty) {
-                  // Fallback: tra cứu từ customerIdMap dựa trên tên
-                  final fallbackCustomerId = customerIdMap[customer];
-                  if (fallbackCustomerId == null) {
+              int finalCustomerId;
+              if (customerId != null && customerId.isNotEmpty) {
+                finalCustomerId = int.parse(customerId);
+              } else {
+                final fallbackId = customerIdMap[customer];
+                if (fallbackId == null) {
                   throw Exception('Không tìm thấy ID của khách hàng "$customer"!');
                   }
-                  // Sử dụng fallback ID cho các bước tiếp theo
-                  final currentCustomer = await retry(
-                    () => supabase.from('customers').select('debt_vnd, debt_cny, debt_usd').eq('id', fallbackCustomerId).maybeSingle(),
-                    operation: 'Fetch customer debt',
-                  );
-                  if (currentCustomer == null) {
-                    throw Exception('Khách hàng "$customer" không tồn tại trong hệ thống!');
-                  }
-                  final currentDebt = (currentCustomer[debtColumn] as num?)?.toDouble() ?? 0.0;
-                  final updatedDebt = currentDebt - customerAmount;
-                  await retry(
-                    () => supabase.from('customers').update({debtColumn: updatedDebt}).eq('id', fallbackCustomerId),
-                    operation: 'Update customer debt for $debtColumn',
-                  );
-                  continue; // Skip to next currency group
-                }
-                final currentCustomer = await retry(
-                  () => supabase.from('customers').select('debt_vnd, debt_cny, debt_usd').eq('id', customerId).maybeSingle(),
-                  operation: 'Fetch customer debt',
-                );
+                finalCustomerId = int.parse(fallbackId);
+              }
 
-                if (currentCustomer == null) {
-                  throw Exception('Khách hàng "$customer" không tồn tại trong hệ thống!');
-                }
+              // Determine debt columns based on currency
+              if (saleCurrency != 'VND' && saleCurrency != 'CNY' && saleCurrency != 'USD') {
+                throw Exception('Loại tiền tệ không được hỗ trợ: $saleCurrency cho IMEI ${itemsByCurrency.first['imei']}');
+              }
 
-                final currentDebt = (currentCustomer[debtColumn] as num?)?.toDouble() ?? 0.0;
-                final updatedDebt = currentDebt - customerAmount;
-
-                await retry(
-                  () => supabase.from('customers').update({debtColumn: updatedDebt}).eq('id', customerId),
-                  operation: 'Update customer debt for $debtColumn',
-                );
+              customersDebtChangesList.add({
+                'customer_id': finalCustomerId,
+                'debt_vnd': saleCurrency == 'VND' ? -customerAmount : 0,
+                'debt_cny': saleCurrency == 'CNY' ? -customerAmount : 0,
+                'debt_usd': saleCurrency == 'USD' ? -customerAmount : 0,
+              });
               }
             }
           } else {
-            final selectedAccount = accounts.firstWhere((acc) => acc['name'] == account);
-            final currentBalance = selectedAccount['balance'] as double? ?? 0.0;
-            final updatedBalance = currentBalance -
-                items.fold<double>(
+          // Calculate account balance change
+          accountBalanceChange = -items.fold<double>(
                     0.0,
                     (sum, item) => sum +
                         (item['reimport_price'] != null
                             ? (item['reimport_price'] is num ? (item['reimport_price'] as num).toDouble() : 0.0)
                             : (item['sale_price'] is num ? (item['sale_price'] as num).toDouble() : 0.0)));
+        }
 
-            await retry(
-              () => supabase.from('financial_accounts').update({'balance': updatedBalance}).eq('name', account!).eq('currency', currency!),
-              operation: 'Update account balance',
-            );
+        // ✅ CALL RPC FUNCTION - All operations in ONE atomic transaction
+        print('Calling create_reimport_transaction RPC with ${reimportOrdersList.length} orders');
+        final result = await retry(
+          () => supabase.rpc('create_reimport_transaction', params: {
+            'p_ticket_id': ticketId,
+            'p_reimport_orders': reimportOrdersList,
+            'p_products_updates': productsUpdatesList,
+            'p_customers_debt_changes': customersDebtChangesList,
+            'p_transporters_debt_changes': <Map<String, dynamic>>[], // Empty for regular reimport
+            'p_account_balance_change': accountBalanceChange,
+            'p_account': account ?? 'Công nợ', // Default to 'Công nợ' if null to avoid empty string
+            'p_currency': currency ?? 'VND',
+            'p_snapshot_data': snapshotData,
+            'p_created_at': now.toIso8601String(),
+          }),
+          operation: 'Create reimport transaction (RPC)',
+        );
+
+        // Check result
+        if (result == null || result['success'] != true) {
+          throw Exception('RPC function returned error: ${result?['message'] ?? 'Unknown error'}');
           }
+
+        print('✅ Reimport transaction created successfully via RPC!');
 
         // Calculate total amount by currency
         final amountsByCurrency = <String, double>{};
@@ -1277,6 +1359,51 @@ class _ReimportFormState extends State<ReimportForm> {
           'Phiếu Nhập Lại Hàng Đã Tạo',
           'Đã tạo phiếu nhập lại hàng cho ${customerGroups.keys.join(', ')}',
           data: {'type': 'reimport_created'},
+        );
+        
+        // Lấy số dư cuối từ tài khoản (nếu không phải Công nợ)
+        String? finalBalanceStr;
+        if (account != null && account != 'Công nợ' && currency != null) {
+          try {
+            final accountData = await supabase
+                .from('financial_accounts')
+                .select('balance')
+                .eq('name', account!)
+                .eq('currency', currency!)
+                .maybeSingle();
+            if (accountData != null) {
+              final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+              finalBalanceStr = formatNumberLocal(balance);
+            }
+          } catch (e) {
+            print('⚠️ Không thể lấy số dư cuối: $e');
+          }
+        }
+        
+        // Tính tổng số tiền và lấy danh sách IMEI
+        final totalAmount = items.fold<double>(
+          0.0,
+          (sum, item) => sum + (item['reimport_price'] != null
+              ? (item['reimport_price'] is num ? (item['reimport_price'] as num).toDouble() : 0.0)
+              : (item['sale_price'] is num ? (item['sale_price'] as num).toDouble() : 0.0)),
+        );
+        final imeiList = items.map((item) => item['imei'] as String).join(', ');
+        
+        // ✅ Gửi thông báo Telegram với thông tin chi tiết
+        await NotificationService.sendTransactionToTelegram(
+          transactionType: 'reimport', // Loại phiếu
+          type: 'Phiếu Nhập Lại Hàng', // Tên hiển thị
+          ticketId: ticketId,
+          customer: customerGroups.keys.join(', '),
+          productName: CacheUtil.getProductName(productId),
+          quantity: items.length,
+          imeiList: imeiList,
+          totalAmount: formatNumberLocal(totalAmount),
+          currency: currency ?? 'VND',
+          paymentMethod: account ?? 'Công nợ',
+          account: account != 'Công nợ' ? account : null,
+          finalBalance: finalBalanceStr,
+          note: note,
         );
 
         if (mounted) {
@@ -1749,6 +1876,7 @@ class _ReimportFormState extends State<ReimportForm> {
                           setState(() {
                             imeiError = error;
                           });
+                          await _showImeiErrorDialog(error);
                         } else {
                           await _addImeiToList(selection);
                           await _fetchAvailableImeis('');
@@ -1778,6 +1906,7 @@ class _ReimportFormState extends State<ReimportForm> {
                               setState(() {
                                 imeiError = error;
                               });
+                              await _showImeiErrorDialog(error);
                               return;
                             }
                             await _addImeiToList(value);
@@ -1787,7 +1916,6 @@ class _ReimportFormState extends State<ReimportForm> {
                             labelText: 'IMEI',
                             border: InputBorder.none,
                             isDense: true,
-                            errorText: imeiError,
                             hintText: productId == null ? 'Chọn sản phẩm trước' : null,
                           ),
                         );

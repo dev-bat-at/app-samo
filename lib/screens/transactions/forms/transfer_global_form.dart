@@ -177,6 +177,7 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
 
     try {
       final supabase = widget.tenantClient;
+      developer.log('🔍 _fetchAvailableImeis: productId=$productId, query="$query"');
       final response = await supabase
           .from('products')
           .select('imei')
@@ -185,9 +186,16 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
           .ilike('imei', '%$query%')
           .limit(10);
 
+      developer.log('🔍 _fetchAvailableImeis: Found ${response.length} IMEIs from database');
       final imeiListFromDb = response
-          .map((e) => e['imei'] as String?)
+          .map((e) {
+            final rawImei = e['imei'] as String?;
+            final trimmedImei = rawImei?.trim();
+            developer.log('🔍 _fetchAvailableImeis: Raw IMEI="$rawImei", Trimmed="$trimmedImei"');
+            return trimmedImei;
+          })
           .whereType<String>()
+          .where((imei) => imei.isNotEmpty)
           .toList();
 
       final filteredImeis = imeiListFromDb
@@ -195,15 +203,36 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
           .toList()
         ..sort();
 
+      developer.log('🔍 _fetchAvailableImeis: Final filtered IMEIs: $filteredImeis');
       setState(() {
         availableImeis = filteredImeis;
       });
     } catch (e) {
-      print('Error fetching IMEI suggestions: $e');
+      developer.log('❌ Error fetching IMEI suggestions: $e');
       setState(() {
         availableImeis = [];
       });
     }
+  }
+
+  // ✅ Helper method để hiển thị lỗi IMEI dạng popup
+  Future<void> _showImeiErrorDialog(String error) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Lỗi IMEI'),
+        content: SingleChildScrollView(
+          child: Text(error),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
   }
 
   // Check for duplicate IMEIs
@@ -218,23 +247,74 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
   // Check inventory status of IMEI
   Future<String?> _checkInventoryStatus(String input) async {
     if (productId == null) return 'Vui lòng chọn sản phẩm!';
-    if (input.trim().isEmpty) return null;
+    final trimmedInput = input.trim();
+    if (trimmedInput.isEmpty) return null;
 
     try {
       final supabase = widget.tenantClient;
-      final productResponse = await supabase
+      developer.log('🔍 _checkInventoryStatus: Input="$input", Trimmed="$trimmedInput", productId=$productId');
+      
+      // ✅ FIX: Query với .ilike() để match case-insensitive và có thể match IMEI có khoảng trắng
+      // Sau đó filter kết quả để tìm exact match sau khi trim
+      final productResponseList = await supabase
           .from('products')
-          .select('status, product_id')
-          .eq('imei', input.trim())
+          .select('status, product_id, imei')
           .eq('product_id', productId!)
-          .maybeSingle();
+          .eq('status', 'Tồn kho')
+          .ilike('imei', '%$trimmedInput%') // ✅ Dùng % để match cả IMEI có khoảng trắng
+          .limit(100); // Lấy nhiều để tìm exact match
 
-      if (productResponse == null || productResponse['status'] != 'Tồn kho') {
+      developer.log('🔍 _checkInventoryStatus: Query result count: ${productResponseList.length}');
+      developer.log('🔍 _checkInventoryStatus: Query results: ${productResponseList.map((e) => 'IMEI="${e['imei']}" (trimmed="${(e['imei'] as String?)?.trim()}")').toList()}');
+      
+      // Tìm exact match (so sánh sau khi trim cả 2 bên)
+      Map<String, dynamic>? productResponse;
+      try {
+        productResponse = productResponseList.firstWhere(
+          (item) {
+            final dbImei = (item['imei'] as String?)?.trim() ?? '';
+            final match = dbImei.toLowerCase() == trimmedInput.toLowerCase();
+            developer.log('🔍 _checkInventoryStatus: Comparing dbImei="$dbImei" with trimmedInput="$trimmedInput", match=$match');
+            return match;
+          },
+        ) as Map<String, dynamic>?;
+      } catch (e) {
+        developer.log('❌ _checkInventoryStatus: No exact match found: $e');
+        productResponse = null;
+      }
+
+      developer.log('🔍 _checkInventoryStatus: Exact match result: $productResponse');
+      
+      if (productResponse == null) {
+        developer.log('❌ _checkInventoryStatus: ProductResponse is NULL for IMEI="$trimmedInput", productId=$productId');
+        // Thử query không filter product_id để xem IMEI có tồn tại không
+        final checkImeiExists = await supabase
+            .from('products')
+            .select('imei, product_id, status')
+            .ilike('imei', trimmedInput)
+            .limit(10);
+        developer.log('🔍 _checkInventoryStatus: IMEI exists check (no product_id filter): $checkImeiExists');
+        
         final productName = CacheUtil.getProductName(productId);
         return 'IMEI "$input" không tồn tại, không thuộc sản phẩm "$productName", hoặc không ở trạng thái Tồn kho!';
       }
+      
+      final status = productResponse['status']?.toString();
+      final foundProductId = productResponse['product_id']?.toString();
+      final foundImei = productResponse['imei']?.toString();
+      developer.log('🔍 _checkInventoryStatus: Found status="$status", product_id="$foundProductId", imei="$foundImei"');
+      developer.log('🔍 _checkInventoryStatus: Expected status="Tồn kho", Actual status="$status", Match: ${status == 'Tồn kho'}');
+      
+      if (status != 'Tồn kho') {
+        final productName = CacheUtil.getProductName(productId);
+        developer.log('❌ _checkInventoryStatus: Status mismatch! Expected "Tồn kho", got "$status"');
+        return 'IMEI "$input" không tồn tại, không thuộc sản phẩm "$productName", hoặc không ở trạng thái Tồn kho!';
+      }
+      
+      developer.log('✅ _checkInventoryStatus: IMEI validation passed');
       return null;
     } catch (e) {
+      developer.log('❌ _checkInventoryStatus: Exception: $e');
       return 'Lỗi khi kiểm tra IMEI "$input": $e';
     }
   }
@@ -293,19 +373,25 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
         // Phát âm thanh beep khi quét thành công
         _playBeepSound();
         
+        final duplicateError = _checkDuplicateImeis(scannedData);
+        if (duplicateError != null) {
         setState(() {
-          imei = scannedData;
-          imeiController.text = scannedData;
-          imeiError = _checkDuplicateImeis(scannedData);
+            imeiError = duplicateError;
         });
+          await _showImeiErrorDialog(duplicateError);
+          return;
+        }
 
-        if (imeiError == null) {
-          final error = await _checkInventoryStatus(scannedData);
-          if (mounted) {
+        final inventoryError = await _checkInventoryStatus(scannedData);
+        if (inventoryError != null) {
             setState(() {
-              imeiError = error;
+            imeiError = inventoryError;
             });
-            if (error == null) {
+          await _showImeiErrorDialog(inventoryError);
+          return;
+        }
+
+        if (mounted) {
               setState(() {
                 imeiList.insert(0, scannedData.trim());
                 imei = '';
@@ -313,8 +399,6 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
                 imeiError = null;
                 imeiFocusNode.unfocus();
               });
-            }
-          }
         }
       }
     } catch (e) {
@@ -348,19 +432,25 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
         // Phát âm thanh beep khi quét thành công
         _playBeepSound();
         
+        final duplicateError = _checkDuplicateImeis(scannedData);
+        if (duplicateError != null) {
         setState(() {
-          imei = scannedData;
-          imeiController.text = scannedData;
-          imeiError = _checkDuplicateImeis(scannedData);
+            imeiError = duplicateError;
         });
+          await _showImeiErrorDialog(duplicateError);
+          return;
+        }
 
-        if (imeiError == null) {
-          final error = await _checkInventoryStatus(scannedData);
-          if (mounted) {
+        final inventoryError = await _checkInventoryStatus(scannedData);
+        if (inventoryError != null) {
             setState(() {
-              imeiError = error;
+            imeiError = inventoryError;
             });
-            if (error == null) {
+          await _showImeiErrorDialog(inventoryError);
+          return;
+        }
+
+        if (mounted) {
               setState(() {
                 imeiList.insert(0, scannedData.trim());
                 imei = '';
@@ -368,8 +458,6 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
                 imeiError = null;
                 imeiFocusNode.unfocus();
               });
-            }
-          }
         }
       }
     } catch (e) {
@@ -739,6 +827,18 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
         "Đã tạo phiếu vận chuyển quốc tế sản phẩm ${CacheUtil.getProductName(productId)} số lượng ${formatNumberLocal(imeiList.length)}",
         data: {'type': 'transfer_global_created'},
       );
+      
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'transfer_global',
+        type: 'Phiếu Chuyển Kho Quốc Tế',
+        ticketId: ticketId,
+        partnerType: 'transporters',
+        partnerName: transporter,
+        productName: CacheUtil.getProductName(productId),
+        quantity: imeiList.length,
+        imeiList: imeiList.join(', '),
+      );
 
       if (mounted) {
         await showDialog(
@@ -1015,24 +1115,36 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
                       onSelected: (String selection) async {
                         if (selection == 'Vui lòng chọn sản phẩm' || selection == 'Không tìm thấy IMEI') return;
 
-                        final error = _checkDuplicateImeis(selection);
+                        developer.log('🔍 onSelected: Selection="$selection", Length=${selection.length}, Bytes=${selection.codeUnits}');
+                        final trimmedSelection = selection.trim();
+                        developer.log('🔍 onSelected: Trimmed="$trimmedSelection", Length=${trimmedSelection.length}, Bytes=${trimmedSelection.codeUnits}');
+                        developer.log('🔍 onSelected: Available IMEIs: $availableImeis');
+                        developer.log('🔍 onSelected: Selection in availableImeis: ${availableImeis.contains(trimmedSelection)}');
+                        
+                        final error = _checkDuplicateImeis(trimmedSelection);
                         if (error != null) {
+                          developer.log('❌ onSelected: Duplicate error: $error');
                           setState(() {
                             imeiError = error;
                           });
+                          await _showImeiErrorDialog(error);
                           return;
                         }
 
-                        final inventoryError = await _checkInventoryStatus(selection);
+                        developer.log('🔍 onSelected: Calling _checkInventoryStatus with "$trimmedSelection"');
+                        final inventoryError = await _checkInventoryStatus(trimmedSelection);
                         if (inventoryError != null) {
+                          developer.log('❌ onSelected: Inventory error: $inventoryError');
                           setState(() {
                             imeiError = inventoryError;
                           });
+                          await _showImeiErrorDialog(inventoryError);
                           return;
                         }
 
+                        developer.log('✅ onSelected: Successfully added IMEI "$trimmedSelection"');
                         setState(() {
-                          imeiList.add(selection);
+                          imeiList.add(trimmedSelection);
                           imei = '';
                           imeiController.text = '';
                           imeiError = null;
@@ -1056,24 +1168,27 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
                           onSubmitted: (value) async {
                             if (value.isEmpty) return;
 
-                            final error = _checkDuplicateImeis(value);
+                            final trimmedValue = value.trim();
+                            final error = _checkDuplicateImeis(trimmedValue);
                             if (error != null) {
                               setState(() {
                                 imeiError = error;
                               });
+                              await _showImeiErrorDialog(error);
                               return;
                             }
 
-                            final inventoryError = await _checkInventoryStatus(value);
+                            final inventoryError = await _checkInventoryStatus(trimmedValue);
                             if (inventoryError != null) {
                               setState(() {
                                 imeiError = inventoryError;
                               });
+                              await _showImeiErrorDialog(inventoryError);
                               return;
                             }
 
                             setState(() {
-                              imeiList.add(value);
+                              imeiList.add(trimmedValue);
                               imei = '';
                               imeiController.text = '';
                               imeiError = null;
@@ -1084,7 +1199,6 @@ class _TransferGlobalFormState extends State<TransferGlobalForm> {
                             labelText: 'IMEI',
                             border: InputBorder.none,
                             isDense: true,
-                            errorText: imeiError,
                             hintText: productId == null ? 'Chọn sản phẩm trước' : null,
                           ),
                         );

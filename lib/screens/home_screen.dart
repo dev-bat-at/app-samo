@@ -2,7 +2,24 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:bcrypt/bcrypt.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'transactions/transaction_screen.dart';
+import 'transactions/forms/import_form.dart';
+import 'transactions/forms/return_form.dart';
+import 'transactions/forms/sale_form.dart';
+import 'transactions/forms/fix_send_form.dart';
+import 'transactions/forms/fix_receive_form.dart';
+import 'transactions/forms/transfer_local_form.dart';
+import 'transactions/forms/transfer_global_form.dart';
+import 'transactions/forms/transfer_receive_form.dart';
+import 'transactions/forms/transfer_fee_form.dart';
+import 'transactions/forms/payment_form.dart';
+import 'transactions/forms/receive_form.dart';
+import 'transactions/forms/income_other_form.dart';
+import 'transactions/forms/cost_form.dart';
+import 'transactions/forms/exchange_form.dart';
+import 'transactions/forms/transfer_fund_form.dart';
+import 'transactions/forms/warehouse_form.dart';
+import 'transactions/forms/reimport_form.dart';
+import 'transactions/forms/cod_return_form.dart';
 import 'inventory_screen.dart';
 import 'overview_screen.dart';
 import 'customers_screen.dart';
@@ -17,6 +34,7 @@ import 'notification_service.dart';
 import 'excel_report_screen.dart';
 import 'orders_screen.dart';
 import 'categories_screen.dart';
+import 'telegram_config_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:intl/intl.dart';
 import '../helpers/global_cache_manager.dart';
@@ -325,39 +343,373 @@ class _HomeScreenState extends State<HomeScreen> {
   ) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(24),
-      child: Container(
+      borderRadius: BorderRadius.circular(20),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 64,
+            height: 64,
         decoration: BoxDecoration(
           color: bgColor,
-          borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: bgColor.withOpacity(0.4),
-              blurRadius: 10,
-              offset: const Offset(0, 4),
+                  color: bgColor.withOpacity(0.3),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
             )
           ],
         ),
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+            child: Icon(icon, size: 32, color: Colors.white),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 11,
+              color: Colors.black87,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTransactionTile(
+    BuildContext context,
+    String label,
+    IconData icon,
+    Widget page,
+    Color color,
+  ) {
+    return GestureDetector(
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => page),
+      ),
+      child: Container(
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: color.withOpacity(0.5), width: 1.5),
+        ),
+        padding: const EdgeInsets.all(8),
         child: FittedBox(
           fit: BoxFit.scaleDown,
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Icon(icon, size: 28, color: Colors.white),
-              const SizedBox(height: 4),
+              CircleAvatar(
+                backgroundColor: color,
+                radius: 18,
+                child: Icon(icon, color: Colors.white, size: 18),
+              ),
+              const SizedBox(height: 6),
               Text(
                 label,
                 textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w500),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                    fontSize: 12, color: Colors.white, fontWeight: FontWeight.w600),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  bool _hasAnyPermissionForTab(List<String> requiredPermissions) {
+    return requiredPermissions.any((perm) => permissions.contains(perm));
+  }
+
+  Widget _buildTransactionTabs() {
+    final buySellPermissions = [
+      'access_import_form',
+      'access_return_form',
+      'access_sale_form',
+      'access_fix_send_form',
+      'access_fix_receive_form',
+      'access_reimport_form',
+    ];
+    final transportPermissions = [
+      'access_transfer_local_form',
+      'access_transfer_global_form',
+      'access_transfer_receive_form',
+      'access_transfer_fee_form',
+      'access_warehouse_form',
+    ];
+    final financePermissions = [
+      'access_payment_form',
+      'access_receive_form',
+      'access_income_other_form',
+      'access_cost_form',
+      'access_exchange_form',
+      'access_transfer_fund_form',
+    ];
+
+    return DefaultTabController(
+      length: 3,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            color: Colors.black,
+            child: TabBar(
+              indicatorColor: Colors.yellow,
+              labelColor: Colors.yellow,
+              unselectedLabelColor: Colors.white70,
+              labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+              tabs: const [
+                Tab(text: 'Mua / Bán'),
+                Tab(text: 'Vận chuyển'),
+                Tab(text: 'Tài chính'),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 280,
+            child: TabBarView(
+              children: [
+                _hasAnyPermissionForTab(buySellPermissions)
+                    ? Builder(
+                        builder: (context) {
+                          final tiles = <Widget>[];
+                          if (permissions.contains('access_import_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Nhập hàng',
+                              Icons.download,
+                              ImportForm(tenantClient: widget.tenantClient),
+                              Colors.green,
+                            ));
+                          }
+                          if (permissions.contains('access_return_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Trả hàng',
+                              Icons.undo,
+                              ReturnForm(tenantClient: widget.tenantClient),
+                              Colors.orange,
+                            ));
+                          }
+                          if (permissions.contains('access_sale_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Bán hàng',
+                              Icons.point_of_sale,
+                              SaleForm(tenantClient: widget.tenantClient),
+                              Colors.blue,
+                            ));
+                          }
+                          if (permissions.contains('access_fix_send_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Gửi fix lỗi',
+                              Icons.build,
+                              FixSendForm(tenantClient: widget.tenantClient),
+                              Colors.deepPurple,
+                            ));
+                          }
+                          if (permissions.contains('access_fix_receive_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Nhận fix về',
+                              Icons.assignment_turned_in,
+                              FixReceiveForm(tenantClient: widget.tenantClient),
+                              Colors.teal,
+                            ));
+                          }
+                          if (permissions.contains('access_reimport_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Nhập lại hàng',
+                              Icons.replay,
+                              ReimportForm(tenantClient: widget.tenantClient),
+                              Colors.brown,
+                            ));
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Cod Hoàn Hàng',
+                              Icons.assignment_return,
+                              CodReturnForm(tenantClient: widget.tenantClient),
+                              Colors.deepPurpleAccent,
+                            ));
+                          }
+                          return GridView.count(
+                            padding: const EdgeInsets.all(12),
+                            crossAxisCount: 4,
+                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 10,
+                            childAspectRatio: 1.0,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            children: tiles,
+                          );
+                        },
+                      )
+                    : const Center(
+                        child: Text(
+                          'Bạn không có quyền truy cập chức năng nào trong tab Mua / Bán',
+                          style: TextStyle(fontSize: 14, color: Colors.grey),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                _hasAnyPermissionForTab(transportPermissions)
+                    ? Builder(
+                        builder: (context) {
+                          final tiles = <Widget>[];
+                          if (permissions.contains('access_transfer_local_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Chuyển nội địa',
+                              Icons.local_shipping,
+                              TransferLocalForm(tenantClient: widget.tenantClient),
+                              Colors.orangeAccent,
+                            ));
+                          }
+                          if (permissions.contains('access_transfer_global_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Chuyển quốc tế',
+                              Icons.flight_takeoff,
+                              TransferGlobalForm(tenantClient: widget.tenantClient),
+                              Colors.pink,
+                            ));
+                          }
+                          if (permissions.contains('access_transfer_receive_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Nhập kho VC',
+                              Icons.inventory,
+                              TransferReceiveForm(tenantClient: widget.tenantClient),
+                              Colors.deepOrange,
+                            ));
+                          }
+                          if (permissions.contains('access_transfer_fee_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Cước vận chuyển',
+                              Icons.price_change,
+                              TransferFeeForm(tenantClient: widget.tenantClient),
+                              Colors.green,
+                            ));
+                          }
+                          if (permissions.contains('access_warehouse_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Thêm / Sửa kho',
+                              Icons.warehouse,
+                              WarehouseForm(tenantClient: widget.tenantClient),
+                              Colors.indigo,
+                            ));
+                          }
+                          return GridView.count(
+                            padding: const EdgeInsets.all(12),
+                            crossAxisCount: 4,
+                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 10,
+                            childAspectRatio: 1.0,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            children: tiles,
+                          );
+                        },
+                      )
+                    : const Center(
+                        child: Text(
+                          'Bạn không có quyền truy cập chức năng nào trong tab Vận chuyển',
+                          style: TextStyle(fontSize: 14, color: Colors.grey),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                _hasAnyPermissionForTab(financePermissions)
+                    ? Builder(
+                        builder: (context) {
+                          final tiles = <Widget>[];
+                          if (permissions.contains('access_payment_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Chi đối tác',
+                              Icons.money_off,
+                              PaymentForm(tenantClient: widget.tenantClient),
+                              Colors.redAccent,
+                            ));
+                          }
+                          if (permissions.contains('access_receive_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Thu đối tác',
+                              Icons.attach_money,
+                              ReceiveForm(tenantClient: widget.tenantClient),
+                              Colors.green,
+                            ));
+                          }
+                          if (permissions.contains('access_income_other_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Thu nhập khác',
+                              Icons.add_card,
+                              IncomeOtherForm(tenantClient: widget.tenantClient),
+                              Colors.lightBlue,
+                            ));
+                          }
+                          if (permissions.contains('access_cost_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Chi phí',
+                              Icons.money_off_csred,
+                              CostForm(tenantClient: widget.tenantClient),
+                              Colors.deepOrange,
+                            ));
+                          }
+                          if (permissions.contains('access_exchange_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Đổi tiền',
+                              Icons.currency_exchange,
+                              ExchangeForm(tenantClient: widget.tenantClient),
+                              Colors.amber,
+                            ));
+                          }
+                          if (permissions.contains('access_transfer_fund_form')) {
+                            tiles.add(_buildTransactionTile(
+                              context,
+                              'Chuyển quỹ',
+                              Icons.account_balance_wallet,
+                              TransferFundForm(tenantClient: widget.tenantClient),
+                              Colors.indigo,
+                            ));
+                          }
+                          return GridView.count(
+                            padding: const EdgeInsets.all(12),
+                            crossAxisCount: 4,
+                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 10,
+                            childAspectRatio: 1.0,
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            children: tiles,
+                          );
+                        },
+                      )
+                    : const Center(
+                        child: Text(
+                          'Bạn không có quyền truy cập chức năng nào trong tab Tài chính',
+                          style: TextStyle(fontSize: 14, color: Colors.grey),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -585,14 +937,44 @@ class _HomeScreenState extends State<HomeScreen> {
         onRefresh: _refreshDoanhso,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-        child: GridView.count(
-          crossAxisCount: 3,
-          crossAxisSpacing: 16,
+          child: Column(
+            children: [
+              // Phần trên: Phiếu giao dịch với TabBar
+              Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: _buildTransactionTabs(),
+              ),
+              // Phần dưới: Các chức năng khác
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        'Chức năng khác',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ),
+                    GridView.count(
+                      crossAxisCount: 4,
+                      crossAxisSpacing: 12,
           mainAxisSpacing: 16,
-          childAspectRatio: 1.0,
+                      childAspectRatio: 0.75,
           shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
           children: [
@@ -607,17 +989,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               );
             }, Colors.deepPurple),
-            _buildIconButton(context, Icons.swap_horiz, 'Giao dịch', () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => TransactionScreen(
-                    permissions: permissions,
-                    tenantClient: widget.tenantClient,
-                  ),
-                ),
-              );
-            }, Colors.orange),
             _buildIconButton(context, Icons.store, 'Kho', () {
               Navigator.push(
                 context,
@@ -754,9 +1125,21 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 );
               }, Colors.cyan),
+                          if (loggedInUsername != null && loggedInUsername!.toLowerCase() == 'admin')
+                            _buildIconButton(context, Icons.telegram, 'Telegram', () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => TelegramConfigScreen(tenantClient: widget.tenantClient),
+                                ),
+                              );
+                            }, Colors.blue),
+                        ],
+                      ),
           ],
               ),
             ),
+            ],
           ),
         ),
       ),

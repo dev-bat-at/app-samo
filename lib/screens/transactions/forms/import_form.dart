@@ -59,6 +59,42 @@ class ThousandsFormatterLocal extends TextInputFormatter {
   }
 }
 
+// ✅ Formatter để loại bỏ khoảng trắng và dấu cách trong IMEI
+class ImeiInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+    // Nếu không có thay đổi, giữ nguyên
+    if (oldValue.text == newValue.text) return newValue;
+    
+    // Chia thành các dòng
+    final lines = newValue.text.split('\n');
+    
+    // Xử lý từng dòng: loại bỏ tất cả khoảng trắng và trim
+    final processedLines = lines.map((line) {
+      // Loại bỏ tất cả khoảng trắng (space) và tab
+      return line.replaceAll(RegExp(r'\s+'), '').trim();
+    }).toList();
+    
+    // Nối lại các dòng
+    final processedText = processedLines.join('\n');
+    
+    // Tính toán vị trí cursor mới
+    int newOffset = newValue.selection.baseOffset;
+    if (processedText.length < oldValue.text.length) {
+      // Nếu text ngắn hơn, điều chỉnh cursor
+      final removedChars = oldValue.text.length - processedText.length;
+      newOffset = (newOffset - removedChars).clamp(0, processedText.length);
+    } else {
+      newOffset = newOffset.clamp(0, processedText.length);
+    }
+    
+    return TextEditingValue(
+      text: processedText,
+      selection: TextSelection.collapsed(offset: newOffset),
+    );
+  }
+}
+
 String generateTicketId() {
   final now = DateTime.now();
   final dateFormat = DateFormat('yyyyMMdd-HHmmss');
@@ -367,8 +403,29 @@ class _ImportFormState extends State<ImportForm> {
     }
   }
 
+  // ✅ Helper method để hiển thị lỗi IMEI dạng popup
+  Future<void> _showImeiErrorDialog(String error) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Lỗi IMEI'),
+        content: SingleChildScrollView(
+          child: Text(error),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
   String? _checkDuplicateImeis(String input) {
-    final lines = input.split('\n').where((e) => e.trim().isNotEmpty).toList();
+    // ✅ Trim IMEI để loại bỏ khoảng trắng thừa
+    final lines = input.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
     final seen = <String>{};
     for (var line in lines) {
       if (seen.contains(line)) {
@@ -380,14 +437,16 @@ class _ImportFormState extends State<ImportForm> {
   }
 
   Future<String?> _checkProductStatus(String input) async {
-    final lines = input.split('\n').where((e) => e.trim().isNotEmpty).toList();
+    // ✅ Trim IMEI để loại bỏ khoảng trắng thừa
+    final lines = input.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
     if (lines.isEmpty) return null;
     final supabase = widget.tenantClient;
 
     try {
       for (int i = 0; i < lines.length; i += batchSize) {
         final batchImeis = lines.sublist(i, math.min(i + batchSize, lines.length));
-        final imeisToCheck = batchImeis.where((imei) => !confirmedImeis.contains(imei)).toList();
+        // ✅ Trim IMEI khi check với confirmedImeis
+        final imeisToCheck = batchImeis.map((imei) => imei.trim()).where((imei) => !confirmedImeis.contains(imei)).toList();
         if (imeisToCheck.isEmpty) continue;
 
         final response = await retry(
@@ -458,25 +517,43 @@ class _ImportFormState extends State<ImportForm> {
       );
 
       if (scannedData != null && mounted) {
-        // Phát âm thanh beep khi quét thành công
+        // Phát âm âm thanh beep khi quét thành công
         _playBeepSound();
         
+        // ✅ Trim IMEI để loại bỏ khoảng trắng thừa
+        final trimmedScannedData = scannedData.trim();
+        
+        final currentImei = imei != null && imei!.isNotEmpty 
+            ? '$imei\n$trimmedScannedData' 
+            : trimmedScannedData;
+        
+        final duplicateError = _checkDuplicateImeis(currentImei);
+        if (duplicateError != null) {
         setState(() {
-          if (imei != null && imei!.isNotEmpty) {
-            imei = '$imei\n$scannedData';
-          } else {
-            imei = scannedData;
-          }
-          imeiController.text = imei ?? '';
-          imeiError = _checkDuplicateImeis(imei!);
+            imei = currentImei;
+            imeiController.text = currentImei;
+            imeiError = duplicateError;
         });
-
-        if (imeiError == null) {
-          final error = await _checkProductStatus(imei!);
-          if (mounted) {
-            setState(() => imeiError = error);
-          }
+          await _showImeiErrorDialog(duplicateError);
+          return;
         }
+
+        final productError = await _checkProductStatus(currentImei);
+        if (productError != null) {
+          setState(() {
+            imei = currentImei;
+            imeiController.text = currentImei;
+            imeiError = productError;
+          });
+          await _showImeiErrorDialog(productError);
+          return;
+        }
+
+        setState(() {
+          imei = currentImei;
+          imeiController.text = currentImei;
+          imeiError = null;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -508,22 +585,40 @@ class _ImportFormState extends State<ImportForm> {
         // Phát âm thanh beep khi quét thành công
         _playBeepSound();
         
+        // ✅ Trim IMEI để loại bỏ khoảng trắng thừa
+        final trimmedScannedData = scannedData.trim();
+        
+        final currentImei = imei != null && imei!.isNotEmpty 
+            ? '$imei\n$trimmedScannedData' 
+            : trimmedScannedData;
+        
+        final duplicateError = _checkDuplicateImeis(currentImei);
+        if (duplicateError != null) {
         setState(() {
-          if (imei != null && imei!.isNotEmpty) {
-            imei = '$imei\n$scannedData';
-          } else {
-            imei = scannedData;
-          }
-          imeiController.text = imei ?? '';
-          imeiError = _checkDuplicateImeis(imei!);
+            imei = currentImei;
+            imeiController.text = currentImei;
+            imeiError = duplicateError;
         });
-
-        if (imeiError == null) {
-          final error = await _checkProductStatus(imei!);
-          if (mounted) {
-            setState(() => imeiError = error);
-          }
+          await _showImeiErrorDialog(duplicateError);
+          return;
         }
+
+        final productError = await _checkProductStatus(currentImei);
+        if (productError != null) {
+          setState(() {
+            imei = currentImei;
+            imeiController.text = currentImei;
+            imeiError = productError;
+          });
+          await _showImeiErrorDialog(productError);
+          return;
+        }
+
+        setState(() {
+          imei = currentImei;
+          imeiController.text = currentImei;
+          imeiError = null;
+        });
       }
     } catch (e) {
       if (mounted) {
@@ -1135,7 +1230,8 @@ class _ImportFormState extends State<ImportForm> {
 
     List<String> imeiList = [];
     if (imei != null && imei!.isNotEmpty) {
-      imeiList = imei!.split('\n').where((e) => e.trim().isNotEmpty).toList();
+      // ✅ Trim từng IMEI để loại bỏ khoảng trắng thừa
+      imeiList = imei!.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
     }
 
     if (imeiList.isEmpty) {
@@ -1259,7 +1355,8 @@ class _ImportFormState extends State<ImportForm> {
                   final supabase = widget.tenantClient;
 
                   for (int i = 0; i < imeiList.length; i += batchSize) {
-                    final batchImeis = imeiList.sublist(i, math.min(i + batchSize, imeiList.length));
+                    // ✅ Đảm bảo IMEI đã được trim trước khi check với database
+                    final batchImeis = imeiList.sublist(i, math.min(i + batchSize, imeiList.length)).map((e) => e.trim()).toList();
                     final existingProducts = await retry(
                           () => supabase
                           .from('products')
@@ -1375,6 +1472,25 @@ class _ImportFormState extends State<ImportForm> {
 
                   final currentProductId = productId;
                   final currentImeiListLength = imeiList.length;
+                  
+                  // Lấy số dư cuối từ tài khoản (nếu không phải Công nợ)
+                  String? finalBalanceStr;
+                  if (account != null && account != 'Công nợ' && currency != null) {
+                    try {
+                      final accountData = await supabase
+                          .from('financial_accounts')
+                          .select('balance')
+                          .eq('name', account!)
+                          .eq('currency', currency!)
+                          .maybeSingle();
+                      if (accountData != null) {
+                        final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+                        finalBalanceStr = formatNumberLocal(balance);
+                      }
+                    } catch (e) {
+                      print('⚠️ Không thể lấy số dư cuối: $e');
+                    }
+                  }
 
                   await NotificationService.showNotification(
                     132,
@@ -1388,6 +1504,23 @@ class _ImportFormState extends State<ImportForm> {
                     'Phiếu Nhập Hàng Đã Tạo',
                     'Đã nhập hàng "${CacheUtil.getProductName(currentProductId)}" số lượng ${formatNumberLocal(currentImeiListLength)} chiếc',
                     data: {'type': 'import_created'},
+                  );
+                  
+                  // ✅ Gửi thông báo Telegram với thông tin chi tiết
+                  await NotificationService.sendTransactionToTelegram(
+                    transactionType: 'import',
+                    type: 'Phiếu Nhập Hàng',
+                    ticketId: ticketId,
+                    productName: CacheUtil.getProductName(currentProductId),
+                    quantity: currentImeiListLength,
+                    imeiList: imeiList.join(', '),
+                    price: formatNumberLocal(amount),
+                    totalAmount: formatNumberLocal(totalAmount),
+                    currency: currency ?? 'VND',
+                    paymentMethod: account ?? 'Công nợ',
+                    account: account != 'Công nợ' ? account : null,
+                    finalBalance: finalBalanceStr,
+                    note: note,
                   );
 
                   if (mounted) {
@@ -1815,6 +1948,7 @@ class _ImportFormState extends State<ImportForm> {
                       child: TextFormField(
                         controller: imeiController,
                         maxLines: null,
+                        inputFormatters: [ImeiInputFormatter()], // ✅ Tự động loại bỏ khoảng trắng
                         onChanged: (val) {
                           setState(() {
                             imei = val;
@@ -1822,10 +1956,26 @@ class _ImportFormState extends State<ImportForm> {
                           });
 
                           if (imeiError == null) {
-                            _checkProductStatus(val).then((error) {
-                              if (mounted) {
+                            _checkProductStatus(val).then((error) async {
+                              if (mounted && error != null) {
                                 setState(() => imeiError = error);
+                                await _showImeiErrorDialog(error);
                               }
+                            });
+                          } else if (imeiError != null) {
+                            _showImeiErrorDialog(imeiError!);
+                          }
+                        },
+                        onEditingComplete: () {
+                          // ✅ Normalize IMEI khi user hoàn thành nhập (trim từng dòng và loại bỏ dòng trống)
+                          final currentText = imeiController.text;
+                          final normalizedLines = currentText.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+                          final normalizedText = normalizedLines.join('\n');
+                          if (normalizedText != currentText) {
+                            imeiController.text = normalizedText;
+                            setState(() {
+                              imei = normalizedText;
+                              imeiError = _checkDuplicateImeis(normalizedText);
                             });
                           }
                         },
@@ -1833,7 +1983,6 @@ class _ImportFormState extends State<ImportForm> {
                           labelText: 'Nhập IMEI hoặc quét QR (mỗi dòng 1)',
                           border: InputBorder.none,
                           isDense: true,
-                          errorText: imeiError,
                           floatingLabelBehavior: FloatingLabelBehavior.never, // ✅ Label biến mất khi focus
                         ),
                       ),

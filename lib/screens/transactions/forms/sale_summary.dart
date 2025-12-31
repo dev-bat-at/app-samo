@@ -789,6 +789,15 @@ class _SaleSummaryState extends State<SaleSummary> {
         }
       }
 
+      // Calculate total amount (needed for debt changes and account balance)
+      final totalAmount = widget.ticketItems.fold<double>(
+        0.0,
+        (sum, item) {
+          final imeiCount = (item['imei'] as String).split(',').where((e) => e.trim().isNotEmpty).length;
+          return sum + ((item['price'] as num?)?.toDouble() ?? 0.0) * imeiCount;
+        },
+      );
+
       // Prepare customer debt change
       Map<String, dynamic>? customerDebtChange;
       if (account == 'Công nợ') {
@@ -964,6 +973,30 @@ class _SaleSummaryState extends State<SaleSummary> {
         developer.log('⚠️ Skipping doanhso update: salesman is empty');
       }
 
+      // Lấy số dư cuối từ tài khoản (nếu không phải Công nợ hoặc Ship COD)
+      String? finalBalanceStr;
+      if (account != null && account != 'Công nợ' && account != 'Ship COD') {
+        try {
+          final accountData = await supabase
+              .from('financial_accounts')
+              .select('balance')
+              .eq('name', account!)
+              .eq('currency', widget.currency)
+              .maybeSingle();
+          if (accountData != null) {
+            final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+            finalBalanceStr = formatNumberLocal(balance);
+          }
+        } catch (e) {
+          print('⚠️ Không thể lấy số dư cuối: $e');
+        }
+      }
+      
+      // Lấy danh sách IMEI (totalAmount đã được tính ở trên)
+      final imeiList = widget.ticketItems
+          .map((item) => item['imei'] as String)
+          .join(', ');
+
       await NotificationService.showNotification(
         138,
         "Phiếu Bán Hàng Đã Tạo",
@@ -976,6 +1009,23 @@ class _SaleSummaryState extends State<SaleSummary> {
         "Phiếu Bán Hàng Đã Tạo",
         "Đã bán hàng \"$firstProductName\" số lượng ${formatNumberLocal(totalImeiCount)} chiếc",
         data: {'type': 'sale_created'},
+      );
+      
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'sale',
+        type: 'Phiếu Bán Hàng',
+        ticketId: ticketId,
+        customer: widget.customerName,
+        productName: firstProductName,
+        quantity: totalImeiCount,
+        imeiList: imeiList,
+        totalAmount: formatNumberLocal(totalAmount),
+        currency: widget.currency,
+        paymentMethod: account ?? 'Công nợ',
+        account: account != 'Công nợ' && account != 'Ship COD' ? account : null,
+        finalBalance: finalBalanceStr,
+        note: widget.ticketItems.isNotEmpty ? (widget.ticketItems.first['note'] as String?) : null,
       );
 
       if (mounted) {

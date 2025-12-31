@@ -301,6 +301,26 @@ class _ReturnFormState extends State<ReturnForm> {
     }
   }
 
+  // ✅ Helper method để hiển thị lỗi IMEI dạng popup
+  Future<void> _showImeiErrorDialog(String error) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Lỗi IMEI'),
+        content: SingleChildScrollView(
+          child: Text(error),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<Map<String, dynamic>?> _fetchImeiData(String input) async {
     if (input.trim().isEmpty || productId == null) {
       return null;
@@ -619,19 +639,27 @@ class _ReturnFormState extends State<ReturnForm> {
         });
 
         final data = await _fetchImeiData(scannedData);
+        if (data == null) {
+          final error = 'IMEI "$scannedData" không hợp lệ hoặc không tồn kho!';
         setState(() {
-          imeiError = data == null ? 'IMEI "$scannedData" không hợp lệ hoặc không tồn kho!' : null;
+            imeiError = error;
         });
+          await _showImeiErrorDialog(error);
+          return;
+        }
 
-        if (data != null) {
           if (imeiList.contains(scannedData)) {
+          final error = 'IMEI "$scannedData" đã có trong danh sách!';
             setState(() {
-              imeiError = 'IMEI "$scannedData" đã có trong danh sách!';
+            imeiError = error;
               imei = '';
               imeiController.text = '';
             });
+          await _showImeiErrorDialog(error);
             debugPrint('Duplicate IMEI: $scannedData');
-          } else {
+          return;
+        }
+
             setState(() {
               imeiList.insert(0, scannedData);
               imeiData[scannedData] = {
@@ -645,8 +673,6 @@ class _ReturnFormState extends State<ReturnForm> {
               // Không cập nhật quantity ở đây để tránh vô hiệu hóa ô nhập IMEI
             });
             debugPrint('Added IMEI: $scannedData');
-          }
-        }
       }
     } catch (e) {
       if (mounted) {
@@ -1151,16 +1177,23 @@ class _ReturnFormState extends State<ReturnForm> {
               }
 
               if (imeiList.contains(selection)) {
+                final error = 'IMEI "$selection" đã được nhập!';
                 setState(() {
-                  imeiError = 'IMEI "$selection" đã được nhập!';
+                  imeiError = error;
                 });
+                await _showImeiErrorDialog(error);
                 return;
               }
 
               final data = await _fetchImeiData(selection);
+              if (data == null) {
+                final error = 'IMEI "$selection" không hợp lệ hoặc không tồn kho!';
               setState(() {
-                imeiError = data == null ? 'IMEI "$selection" không hợp lệ hoặc không tồn kho!' : null;
+                  imeiError = error;
               });
+                await _showImeiErrorDialog(error);
+                return;
+              }
 
               if (data != null) {
                 setState(() {
@@ -1198,16 +1231,23 @@ class _ReturnFormState extends State<ReturnForm> {
                   if (value.isEmpty) return;
 
                   if (imeiList.contains(value)) {
+                    final error = 'IMEI "$value" đã được nhập!';
                     setState(() {
-                      imeiError = 'IMEI "$value" đã được nhập!';
+                      imeiError = error;
                     });
+                    await _showImeiErrorDialog(error);
                     return;
                   }
 
                   final data = await _fetchImeiData(value);
+                  if (data == null) {
+                    final error = 'IMEI "$value" không hợp lệ hoặc không tồn kho!';
                   setState(() {
-                    imeiError = data == null ? 'IMEI "$value" không hợp lệ hoặc không tồn kho!' : null;
+                      imeiError = error;
                   });
+                    await _showImeiErrorDialog(error);
+                    return;
+                  }
 
                   if (data != null) {
                     setState(() {
@@ -1234,7 +1274,6 @@ class _ReturnFormState extends State<ReturnForm> {
                   contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 0),
                   floatingLabelBehavior: FloatingLabelBehavior.auto,
                   labelStyle: const TextStyle(fontSize: 14),
-                  errorText: imeiError,
                   hintText: productId == null ? 'Chọn sản phẩm trước' : null,
                 ),
               );

@@ -1385,13 +1385,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       : null,
                 )),
                 if (!hasNoPartner)
-                  _buildDetailRow(
-                    'Đối tác',
-                    displayPartner ?? 'N/A',
-                    partnerId: ticket['partner_id']?.toString(),
-                    partnerType: ticket['partner_type']?.toString(),
-                    dialogContext: context,
-                  ),
+                _buildDetailRow(
+                  'Đối tác',
+                  displayPartner ?? 'N/A',
+                  partnerId: ticket['partner_id']?.toString(),
+                  partnerType: ticket['partner_type']?.toString(),
+                  dialogContext: context,
+                ),
                 if (isFinancialTicket && financialType == 'exchange') ...[
                   _buildDetailRow('Số Tiền Đổi', '${_formatNumber(ticket['items'][0]['from_amount'])} ${ticket['items'][0]['from_currency']}'),
                   if (ticket['items'][0]['to_amount'] != null && ticket['items'][0]['to_currency'] != null)
@@ -2158,7 +2158,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   ? ticket['note'].toString()
                   : '';
           final imeiCellValue = _formatImeiForExcelCell(imei);
-          
+
           // Tính số lượng và thành tiền
           final quantity = tableName == 'transporter_orders'
               ? (item['imei'] != null ? (item['imei'] as String).split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).length : 0)
@@ -2323,11 +2323,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
               child: Row(
                 children: [
                   Expanded(
-                    child: Text(
+                  child: Text(
                       displayText,
                       style: const TextStyle(fontSize: 12),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const Icon(Icons.arrow_drop_down, size: 20),
@@ -2558,7 +2558,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (!hasNoPartner)
-              Text('Đối Tác: $displayPartner'),
+            Text('Đối Tác: $displayPartner'),
             if (isFinancialTicket && financialType == 'exchange')
               Text('Số Tiền: ${_formatNumber(ticket['items'][0]['from_amount'])} ${ticket['items'][0]['from_currency']}')
             else if (isFinancialTicket && isTransferFund)

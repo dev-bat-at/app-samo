@@ -511,7 +511,7 @@ class _SupplierDetailsDialogState extends State<SupplierDetailsDialog> {
 
       dynamic financialOrdersQuery = widget.tenantClient
           .from('financial_orders')
-          .select('id, amount, currency, created_at, account, note')
+          .select('id, amount, currency, created_at, account, note, type')
           .eq('partner_type', 'suppliers')
           .eq('partner_id', supplierId)
           .eq('iscancelled', false);
@@ -556,7 +556,18 @@ class _SupplierDetailsDialogState extends State<SupplierDetailsDialog> {
 
       final financialOrders = (results[2] as List<dynamic>)
           .cast<Map<String, dynamic>>()
-          .map((order) => {...order, 'type': 'Chi Thanh Toán Đối Tác'})
+          .map((order) {
+            final orderType = order['type']?.toString() ?? '';
+            String displayType;
+            if (orderType == 'payment') {
+              displayType = 'Chi đối tác';
+            } else if (orderType == 'receive') {
+              displayType = 'Thu đối tác';
+            } else {
+              displayType = 'Chi Thanh Toán Đối Tác'; // Fallback cho các loại khác
+            }
+            return {...order, 'type': displayType};
+          })
           .toList();
       developer.log('Financial Orders: ${financialOrders.length}, First order: ${financialOrders.isNotEmpty ? financialOrders.first : "none"}');
 
@@ -651,7 +662,7 @@ class _SupplierDetailsDialogState extends State<SupplierDetailsDialog> {
 
         final financialOrdersFuture = widget.tenantClient
             .from('financial_orders')
-            .select('id, amount, currency, created_at, account, note')
+            .select('id, amount, currency, created_at, account, note, type')
             .eq('partner_type', 'suppliers')
             .eq('partner_id', supplierId)
             .eq('iscancelled', false)
@@ -673,7 +684,18 @@ class _SupplierDetailsDialogState extends State<SupplierDetailsDialog> {
             .toList();
         final financialOrders = (results[2] as List<dynamic>)
             .cast<Map<String, dynamic>>()
-            .map((order) => {...order, 'type': 'Chi Thanh Toán Đối Tác'})
+            .map((order) {
+              final orderType = order['type']?.toString() ?? '';
+              String displayType;
+              if (orderType == 'payment') {
+                displayType = 'Chi đối tác';
+              } else if (orderType == 'receive') {
+                displayType = 'Thu đối tác';
+              } else {
+                displayType = 'Chi Thanh Toán Đối Tác'; // Fallback cho các loại khác
+              }
+              return {...order, 'type': displayType};
+            })
             .toList();
 
         exportTransactions = [...importOrders, ...returnOrders, ...financialOrders];
@@ -1061,7 +1083,7 @@ class _SupplierDetailsDialogState extends State<SupplierDetailsDialog> {
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            if (type != 'Chi Thanh Toán Đối Tác') ...[
+                            if (type != 'Chi đối tác' && type != 'Thu đối tác' && type != 'Chi Thanh Toán Đối Tác') ...[
                               Text('Sản phẩm: $productName'),
                               if (imei.isNotEmpty) Text('IMEI: $imei'),
                               if (quantity.isNotEmpty) Text('Số lượng: $quantity'),

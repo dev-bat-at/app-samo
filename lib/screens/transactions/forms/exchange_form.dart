@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
+import 'dart:math' as math;
 import '../../notification_service.dart';
 import '../../../helpers/error_handler.dart';
 
@@ -50,6 +52,27 @@ class _ExchangeFormState extends State<ExchangeForm> {
   List<Map<String, dynamic>> accounts = [];
 
   final TextEditingController amountController = TextEditingController();
+  final uuid = const Uuid();
+
+  // Retry helper function
+  Future<T> _retry<T>(Future<T> Function() fn, {String? operation}) async {
+    const maxRetries = 3;
+    const retryDelay = Duration(seconds: 1);
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (attempt == maxRetries - 1) {
+          if (e is PostgrestException) {
+            throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: PostgrestException(message: ${e.message}, code: ${e.code}, details: ${e.details}, hint: ${e.hint})');
+          }
+          throw Exception('${operation ?? 'Operation'} failed after $maxRetries attempts: $e');
+        }
+        await Future.delayed(retryDelay * math.pow(2, attempt).toInt());
+      }
+    }
+    throw Exception('${operation ?? 'Operation'} failed: Unexpected error');
+  }
 
   @override
   void initState() {
@@ -234,58 +257,99 @@ class _ExchangeFormState extends State<ExchangeForm> {
               .eq('name', toAccountName!)
               .single();
 
-      final financialOrderResponse =
-          await widget.tenantClient
-              .from('financial_orders')
-              .insert({
-                'type': 'exchange',
-                'from_amount': amount,
-                'from_currency': fromAcc['currency'] ?? '',
-                'to_amount': receiveAmount,
-                'to_currency': toAcc['currency'] ?? '',
-                'from_account': fromAccountName,
-                'to_account': toAccountName,
-                'note': note,
-                'created_at': DateTime.now().toIso8601String(),
-                ...rateData,
-              })
-              .select()
-              .single();
-
-      final ticketId = financialOrderResponse['id'].toString();
+      final now = DateTime.now();
+      final ticketId = uuid.v4();
 
       final snapshotData = await _createSnapshot(ticketId);
-      await widget.tenantClient.from('snapshots').insert({
-        'ticket_id': ticketId,
-        'ticket_table': 'financial_orders',
-        'snapshot_data': snapshotData,
-        'created_at': DateTime.now().toIso8601String(),
-      });
+
+      // Calculate balance changes
+      final fromBalanceChange = -amount; // Trừ từ tài khoản nguồn
+      final toBalanceChange = receiveAmount; // Cộng vào tài khoản đích
+      final fromCurrency = fromAcc['currency'] ?? '';
+      final toCurrency = toAcc['currency'] ?? '';
+
+      // ✅ CALL RPC FUNCTION - All operations in ONE atomic transaction
+      final result = await _retry(
+        () => widget.tenantClient.rpc('create_exchange_transaction', params: {
+          'p_ticket_id': ticketId,
+          'p_from_account': fromAccountName!,
+          'p_to_account': toAccountName!,
+          'p_from_amount': amount,
+          'p_to_amount': receiveAmount,
+          'p_from_currency': fromCurrency,
+          'p_to_currency': toCurrency,
+          'p_note': note ?? '',
+          'p_from_balance_change': fromBalanceChange,
+          'p_to_balance_change': toBalanceChange,
+          'p_snapshot_data': snapshotData,
+          'p_created_at': now.toIso8601String(),
+        }),
+        operation: 'Create exchange transaction (RPC)',
+      );
+
+      // Check result
+      if (result == null || result['success'] != true) {
+        throw Exception('RPC function returned error: ${result?['message'] ?? 'Unknown error'}');
+      }
+
+      print('✅ Exchange transaction created successfully via RPC!');
+
+      // Lấy số dư cuối từ cả 2 tài khoản
+      String? fromBalanceStr;
+      String? toBalanceStr;
+      try {
+        final fromAccountData = await widget.tenantClient
+            .from('financial_accounts')
+            .select('balance')
+            .eq('name', fromAccountName!)
+            .eq('currency', fromCurrency)
+            .maybeSingle();
+        if (fromAccountData != null) {
+          final balance = (fromAccountData['balance'] as num?)?.toDouble() ?? 0.0;
+          fromBalanceStr = formatNumberLocal(balance);
+        }
+        
+        final toAccountData = await widget.tenantClient
+            .from('financial_accounts')
+            .select('balance')
+            .eq('name', toAccountName!)
+            .eq('currency', toCurrency)
+            .maybeSingle();
+        if (toAccountData != null) {
+          final balance = (toAccountData['balance'] as num?)?.toDouble() ?? 0.0;
+          toBalanceStr = formatNumberLocal(balance);
+        }
+      } catch (e) {
+        print('⚠️ Không thể lấy số dư cuối: $e');
+      }
 
       await NotificationService.showNotification(
         129, // Unique ID for this type of notification
         "Phiếu Đổi Tiền Đã Tạo",
-        "Đã tạo phiếu đổi tiền với số tiền ${formatNumberLocal(amount)} ${fromAcc['currency']}",
+        "Đã tạo phiếu đổi tiền với số tiền ${formatNumberLocal(amount)} $fromCurrency",
         'exchange_created',
       );
       
       // ✅ Gửi thông báo push đến tất cả thiết bị
       await NotificationService.sendNotificationToAll(
         "Phiếu Đổi Tiền Đã Tạo",
-        "Đã tạo phiếu đổi tiền với số tiền ${formatNumberLocal(amount)} ${fromAcc['currency']}",
+        "Đã tạo phiếu đổi tiền với số tiền ${formatNumberLocal(amount)} $fromCurrency",
         data: {'type': 'exchange_created'},
       );
 
-      await widget.tenantClient
-          .from('financial_accounts')
-          .update({'balance': fromBalance - amount})
-          .eq('name', fromAccountName!);
-
-      final toBalance = toAcc['balance'] ?? 0;
-      await widget.tenantClient
-          .from('financial_accounts')
-          .update({'balance': toBalance + receiveAmount})
-          .eq('name', toAccountName!);
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'exchange',
+        type: 'Phiếu Đổi Tiền',
+        ticketId: ticketId,
+        totalAmount: '${formatNumberLocal(amount)} $fromCurrency → ${formatNumberLocal(receiveAmount)} $toCurrency',
+        currency: '$fromCurrency/$toCurrency',
+        account: '$fromAccountName → $toAccountName',
+        finalBalance: fromBalanceStr != null && toBalanceStr != null 
+            ? '$fromAccountName ($fromCurrency): $fromBalanceStr $fromCurrency\n$toAccountName ($toCurrency): $toBalanceStr $toCurrency'
+            : null,
+        note: note,
+      );
 
       await showDialog(
         context: context,

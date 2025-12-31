@@ -290,6 +290,26 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
     }
   }
 
+  // ✅ Helper method để hiển thị lỗi IMEI dạng popup
+  Future<void> _showImeiErrorDialog(String error) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Lỗi IMEI'),
+        content: SingleChildScrollView(
+          child: Text(error),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Đóng'),
+          ),
+        ],
+      ),
+    );
+  }
+
   String? _checkDuplicateImeis(String input) {
     if (imeiList.contains(input.trim())) {
       return 'IMEI "$input" đã được nhập!';
@@ -667,7 +687,7 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
     }
 
     final amount = double.tryParse(price!);
-    if (amount == null || amount <= 0) {
+    if (amount == null || amount < 0) {
       if (mounted) {
         showDialog(
           context: scaffoldContext,
@@ -1057,6 +1077,7 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
                           setState(() {
                             imeiError = error;
                           });
+                          await _showImeiErrorDialog(error);
                           return;
                         }
 
@@ -1065,6 +1086,7 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
                           setState(() {
                             imeiError = inventoryError;
                           });
+                          await _showImeiErrorDialog(inventoryError);
                           return;
                         }
 
@@ -1098,6 +1120,7 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
                               setState(() {
                                 imeiError = error;
                               });
+                              await _showImeiErrorDialog(error);
                               return;
                             }
 
@@ -1106,6 +1129,7 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
                               setState(() {
                                 imeiError = inventoryError;
                               });
+                              await _showImeiErrorDialog(inventoryError);
                               return;
                             }
 
@@ -1124,7 +1148,6 @@ class _FixReceiveFormState extends State<FixReceiveForm> {
                             contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 0),
                             floatingLabelBehavior: FloatingLabelBehavior.auto,
                             labelStyle: const TextStyle(fontSize: 14),
-                            errorText: imeiError,
                             hintText: productId == null ? 'Chọn sản phẩm trước' : null,
                           ),
                         );

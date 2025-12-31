@@ -5,6 +5,7 @@ import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz;
 import 'dart:convert';
 import '../helpers/global_cache_manager.dart';
+import '../helpers/telegram_service.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin
@@ -26,6 +27,9 @@ class NotificationService {
     _tenantUrl = tenantUrl;
     _tenantAnonKey = tenantAnonKey;
     _permissions = permissions;
+
+    // ✅ Khởi tạo Telegram Service
+    await TelegramService.init(tenantClient);
     tz.initializeTimeZones();
     final vietnam = tz.getLocation('Asia/Ho_Chi_Minh');
     tz.setLocalLocation(vietnam);
@@ -211,9 +215,56 @@ class NotificationService {
         print(
             'Error sending notification: ${response.status} - ${response.data}');
       }
+
+      // ✅ Không gửi Telegram ở đây vì các transaction đã có sendTransactionToTelegram riêng
+      // để tránh gửi trùng thông báo
     } catch (e) {
       print('Exception sending notification to all devices: $e');
     }
+  }
+
+  /// Gửi thông báo giao dịch đến Telegram với thông tin chi tiết
+  /// [transactionType] là loại phiếu (sale, import, return, etc.)
+  /// [type] là tên hiển thị (Bán hàng, Nhập hàng, etc.)
+  static Future<void> sendTransactionToTelegram({
+    required String transactionType, // Loại phiếu (sale, import, etc.)
+    required String type, // Tên hiển thị (Bán hàng, Nhập hàng, etc.)
+    required String ticketId,
+    // Thông tin đối tác (cho phiếu thu/chi)
+    String?
+        partnerType, // Loại đối tác: customers, suppliers, fix_units, transporters
+    String? partnerName, // Tên đối tác
+    // Thông tin hàng hóa (cho phiếu bán/nhập/trả)
+    String? customer, // Khách hàng
+    String? productName, // Tên sản phẩm
+    int? quantity, // Số lượng
+    String? imeiList, // Danh sách IMEI
+    String? price, // Giá đơn vị
+    String? totalAmount, // Tổng hóa đơn
+    String? currency, // Đơn vị tiền
+    String? paymentMethod, // Phương thức thanh toán
+    String? account, // Tài khoản
+    String? finalBalance, // Số dư cuối
+    String? note, // Ghi chú
+  }) async {
+    await TelegramService.sendTransactionNotification(
+      transactionType: transactionType,
+      type: type,
+      ticketId: ticketId,
+      partnerType: partnerType,
+      partnerName: partnerName,
+      customer: customer,
+      productName: productName,
+      quantity: quantity,
+      imeiList: imeiList,
+      price: price,
+      totalAmount: totalAmount,
+      currency: currency,
+      paymentMethod: paymentMethod,
+      account: account,
+      finalBalance: finalBalance,
+      note: note,
+    );
   }
 
   static Future<void> _saveDeviceToken(String token) async {

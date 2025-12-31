@@ -271,6 +271,15 @@ class _FixSendSummaryState extends State<FixSendSummary> {
         operation: 'Create fix_send_transaction',
           );
 
+      // Lấy thông tin sản phẩm và IMEI
+      final firstItem = widget.ticketItems.isNotEmpty ? widget.ticketItems.first : null;
+      final productName = firstItem != null ? (firstItem['product_name'] as String? ?? 'Không xác định') : 'Không xác định';
+      final fixerName = firstItem != null ? (firstItem['fixer'] as String? ?? 'Không xác định') : 'Không xác định';
+      final imeiList = widget.ticketItems
+          .map((item) => item['imei'] as String)
+          .join(', ');
+      final totalQuantity = widget.ticketItems.fold<int>(0, (sum, item) => sum + (item['quantity'] as int? ?? 1));
+      
       await NotificationService.showNotification(
         131,
         "Phiếu Gửi Sửa Đã Tạo",
@@ -283,6 +292,19 @@ class _FixSendSummaryState extends State<FixSendSummary> {
         "Phiếu Gửi Sửa Đã Tạo",
         "Đã tạo phiếu gửi sửa với ${formatNumberLocal(widget.ticketItems.length)} mục",
         data: {'type': 'fix_send_created'},
+      );
+      
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'fix_send',
+        type: 'Phiếu Gửi Sửa',
+        ticketId: ticketId,
+        partnerType: 'fix_units',
+        partnerName: fixerName,
+        productName: productName,
+        quantity: totalQuantity,
+        imeiList: imeiList,
+        note: firstItem != null ? (firstItem['note'] as String?) : null,
       );
 
       if (mounted) {

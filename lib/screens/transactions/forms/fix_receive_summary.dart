@@ -481,6 +481,35 @@ class _FixReceiveSummaryState extends State<FixReceiveSummary> {
         operation: 'Create fix_receive_transaction',
       );
 
+      // Lấy số dư cuối từ tài khoản (nếu không phải Công nợ)
+      String? finalBalanceStr;
+      if (account != null && account != 'Công nợ') {
+        try {
+          final accountData = await supabase
+              .from('financial_accounts')
+              .select('balance')
+              .eq('name', account!)
+              .eq('currency', widget.currency)
+              .maybeSingle();
+          if (accountData != null) {
+            final balance = (accountData['balance'] as num?)?.toDouble() ?? 0.0;
+            finalBalanceStr = formatNumberLocal(balance);
+          }
+        } catch (e) {
+          print('⚠️ Không thể lấy số dư cuối: $e');
+        }
+      }
+      
+      // Lấy thông tin sản phẩm, IMEI và tính tổng tiền
+      final firstItem = ticketItems.isNotEmpty ? ticketItems.first : null;
+      final productName = firstItem != null ? (firstItem['product_name'] as String? ?? 'Không xác định') : 'Không xác định';
+      final fixerName = firstItem != null ? (firstItem['fixer'] as String? ?? 'Không xác định') : 'Không xác định';
+      final imeiList = ticketItems
+          .map((item) => item['imei'] as String)
+          .join(', ');
+      final totalQuantity = ticketItems.fold<int>(0, (sum, item) => sum + (item['quantity'] as int? ?? 1));
+      final calculatedTotalAmount = _calculateTotalAmount();
+      
       await NotificationService.showNotification(
         130,
         'Phiếu Nhận Hàng Đã Tạo',
@@ -493,6 +522,23 @@ class _FixReceiveSummaryState extends State<FixReceiveSummary> {
         'Phiếu Nhận Hàng Đã Tạo',
         'Đã tạo phiếu nhận hàng sửa về kho',
         data: {'type': 'fix_receive_created'},
+      );
+      
+      // ✅ Gửi thông báo Telegram với thông tin chi tiết
+      await NotificationService.sendTransactionToTelegram(
+        transactionType: 'fix_receive',
+        type: 'Phiếu Nhận Sửa',
+        ticketId: ticketId,
+        partnerType: 'fix_units',
+        partnerName: fixerName,
+        productName: productName,
+        quantity: totalQuantity,
+        imeiList: imeiList,
+        totalAmount: formatNumberLocal(calculatedTotalAmount),
+        currency: widget.currency,
+        paymentMethod: account ?? 'Công nợ',
+        account: account != 'Công nợ' ? account : null,
+        finalBalance: finalBalanceStr,
       );
 
       if (mounted) {
