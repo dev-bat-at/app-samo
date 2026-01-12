@@ -455,19 +455,45 @@ class _ReturnFormState extends State<ReturnForm> {
           .where((e) => e['imei'] != null)
           .toList();
 
-      // ✅ FIX: Lọc duplicate và lấy đúng số lượng
+      // ✅ FIX: Lọc duplicate và lấy đúng số lượng, kiểm tra trạng thái hiện tại là "Tồn kho"
       final filteredImeis = <String>[];
       for (var item in imeiListFromDb) {
         if (filteredImeis.length >= quantity) break;  // Đủ số lượng rồi
         
         final imei = item['imei'] as String;
         if (!imeiList.contains(imei)) {
-          filteredImeis.add(imei);
-          imeiData[imei] = {
-            'price': item['price'] ?? 0,
-            'currency': item['currency'] ?? 'VND',
-            'supplier_id': item['supplier_id'] ?? '',
-          };
+          // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Tồn kho" (tránh race condition)
+          try {
+            final productStatusCheck = await supabase
+                .from('products')
+                .select('status')
+                .eq('imei', imei)
+                .eq('product_id', productId!)
+                .eq('warehouse_id', warehouseId)
+                .maybeSingle();
+            
+            if (productStatusCheck == null) {
+              debugPrint('Skipping IMEI $imei: Product not found');
+              continue;
+            }
+            
+            final currentStatus = productStatusCheck['status']?.toString();
+            if (currentStatus != 'Tồn kho') {
+              debugPrint('Skipping IMEI $imei: Current status is "$currentStatus", not "Tồn kho"');
+              continue;
+            }
+            
+            // Trạng thái hợp lệ, thêm vào danh sách
+            filteredImeis.add(imei);
+            imeiData[imei] = {
+              'price': item['price'] ?? 0,
+              'currency': item['currency'] ?? 'VND',
+              'supplier_id': item['supplier_id'] ?? '',
+            };
+          } catch (e) {
+            debugPrint('Skipping IMEI $imei: Error checking product status: $e');
+            continue;
+          }
         }
       }
 

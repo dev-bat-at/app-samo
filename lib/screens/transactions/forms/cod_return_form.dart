@@ -303,13 +303,31 @@ class _CodReturnFormState extends State<CodReturnForm> {
         }
       }
 
-      // ✅ Filter: chỉ giữ lại IMEI có lần bán gần nhất LÀ Ship COD
+      // ✅ Filter: chỉ giữ lại IMEI có lần bán gần nhất LÀ Ship COD và trạng thái hiện tại là "Đã bán"
       final List<String> validImeis = [];
       for (var imei in imeiSet) {
         final isShipCod = await _checkLatestSaleIsShipCod(imei);
         if (isShipCod == true) {
-          // Lần bán gần nhất là Ship COD → hợp lệ cho phiếu COD hoàn
-          validImeis.add(imei);
+          // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Đã bán" (chưa nhập COD hoàn)
+          try {
+            final productStatusCheck = await supabase
+                .from('products')
+                .select('status')
+                .eq('imei', imei)
+                .eq('product_id', productId!)
+                .maybeSingle();
+            
+            if (productStatusCheck != null) {
+              final currentStatus = productStatusCheck['status']?.toString();
+              if (currentStatus == 'Đã bán') {
+                // Lần bán gần nhất là Ship COD và trạng thái hiện tại là "Đã bán" → hợp lệ cho phiếu COD hoàn
+                validImeis.add(imei);
+              }
+            }
+          } catch (e) {
+            debugPrint('Lỗi khi kiểm tra trạng thái sản phẩm cho IMEI $imei: $e');
+            // Bỏ qua IMEI này nếu có lỗi
+          }
         }
         // Nếu isShipCod == false hoặc null, bỏ qua IMEI này
       }
@@ -386,7 +404,7 @@ class _CodReturnFormState extends State<CodReturnForm> {
       if (isLatestSaleShipCod != true) {
         if (isLatestSaleShipCod == false) {
           final error = 'IMEI "$input" có lần bán gần nhất là bán bình thường, vui lòng sử dụng phiếu Nhập Lại Hàng để nhập lại!';
-          setState(() {
+        setState(() {
             imeiError = error;
           });
           await _showImeiErrorDialog(error);
@@ -395,13 +413,43 @@ class _CodReturnFormState extends State<CodReturnForm> {
           final error = 'Không tìm thấy giao dịch bán cho IMEI "$input"!';
           setState(() {
             imeiError = error;
-          });
+        });
           await _showImeiErrorDialog(error);
-          return;
+        return;
         }
       }
 
       // ✅ Lần bán gần nhất là Ship COD → hợp lệ
+      // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Đã bán" (chưa nhập COD hoàn)
+      final productStatusCheck = await retry(
+        () => supabase
+            .from('products')
+            .select('status')
+            .eq('imei', input)
+            .eq('product_id', productId!)
+            .maybeSingle(),
+        operation: 'Check product status for IMEI $input',
+      );
+      
+      if (productStatusCheck == null) {
+        final error = 'Không tìm thấy sản phẩm cho IMEI "$input"!';
+        setState(() {
+          imeiError = error;
+        });
+        await _showImeiErrorDialog(error);
+        return;
+      }
+      
+      final currentStatus = productStatusCheck['status']?.toString();
+      if (currentStatus != 'Đã bán') {
+        final error = 'IMEI "$input" có trạng thái hiện tại là "$currentStatus", không phải "Đã bán". Sản phẩm có thể đã được nhập COD hoàn trước đó.';
+        setState(() {
+          imeiError = error;
+        });
+        await _showImeiErrorDialog(error);
+        return;
+      }
+      
       // Query sale_order Ship COD gần nhất để lấy thông tin
       final saleOrderResponse = await retry(
         () => supabase
@@ -701,6 +749,33 @@ class _CodReturnFormState extends State<CodReturnForm> {
           final isLatestSaleShipCod = await _checkLatestSaleIsShipCod(individualImei);
           if (isLatestSaleShipCod != true) {
             print('Skipping IMEI $individualImei: Latest sale is not Ship COD');
+            continue;
+          }
+          
+          // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Đã bán" (chưa nhập COD hoàn)
+          try {
+            final productStatusCheck = await retry(
+              () => supabase
+                  .from('products')
+                  .select('status')
+                  .eq('imei', individualImei)
+                  .eq('product_id', productId!)
+                  .maybeSingle(),
+              operation: 'Check product status for IMEI $individualImei',
+            );
+            
+            if (productStatusCheck == null) {
+              print('Skipping IMEI $individualImei: Product not found');
+              continue;
+            }
+            
+            final currentStatus = productStatusCheck['status']?.toString();
+            if (currentStatus != 'Đã bán') {
+              print('Skipping IMEI $individualImei: Current status is "$currentStatus", not "Đã bán"');
+              continue;
+            }
+          } catch (e) {
+            print('Skipping IMEI $individualImei: Error checking product status: $e');
             continue;
           }
           

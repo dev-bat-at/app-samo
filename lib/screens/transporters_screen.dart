@@ -784,17 +784,6 @@ class _TransporterDetailsDialogState extends State<TransporterDetailsDialog> {
         if (hasImei && imeiList.isNotEmpty) {
           // ✅ Mỗi IMEI là 1 dòng riêng - tách sản phẩm và IMEI thành 2 cột
           for (final singleImei in imeiList) {
-            final rowValues = [
-              type,
-              createdAt,
-              productName,
-              singleImei,
-              amountPerImei.toString(),
-              currency,
-              customerPricePerImei > 0 ? customerPricePerImei.toString() : '',
-              transporterPricePerImei > 0 ? transporterPricePerImei.toString() : '',
-            ];
-
             for (int columnIndex = 0; columnIndex < columnCount; columnIndex++) {
               final cell = sheet.cell(
                 CellIndex.indexByColumnRow(
@@ -803,41 +792,52 @@ class _TransporterDetailsDialogState extends State<TransporterDetailsDialog> {
                 ),
               );
               final header = headers[columnIndex];
-              final value = rowValues[columnIndex];
               final isMultiline = columnIndex == 3;
               
               // Xác định loại cell value dựa trên header
-              if (header == 'Số tiền' || header == 'Tiền cọc' || header == 'Tiền COD') {
-                // Cột số tiền - số thực
-                if (value.isNotEmpty && value != '') {
-                  final doubleValue = double.tryParse(value);
-                  cell.value = doubleValue != null ? DoubleCellValue(doubleValue) : TextCellValue(value);
+              if (header == 'Loại giao dịch') {
+                cell.value = TextCellValue(type);
+              } else if (header == 'Ngày') {
+                cell.value = TextCellValue(createdAt);
+              } else if (header == 'Sản phẩm') {
+                cell.value = TextCellValue(productName);
+              } else if (header == 'IMEI') {
+                cell.value = TextCellValue(singleImei);
+              } else if (header == 'Số tiền') {
+                // ✅ Dùng trực tiếp giá trị num thay vì toString() để tránh format sai
+                final amountValue = amountPerImei.toDouble();
+                cell.value = DoubleCellValue(amountValue);
+              } else if (header == 'Đơn vị tiền') {
+                cell.value = TextCellValue(currency);
+              } else if (header == 'Tiền cọc') {
+                if (customerPricePerImei > 0) {
+                  final customerPriceValue = customerPricePerImei.toDouble();
+                  cell.value = DoubleCellValue(customerPriceValue);
+                } else {
+                  cell.value = TextCellValue('');
+                }
+              } else if (header == 'Tiền COD') {
+                if (transporterPricePerImei > 0) {
+                  final transporterPriceValue = transporterPricePerImei.toDouble();
+                  cell.value = DoubleCellValue(transporterPriceValue);
                 } else {
                   cell.value = TextCellValue('');
                 }
               } else {
-                // Cột text
-                cell.value = TextCellValue(value);
+                cell.value = TextCellValue('');
               }
               
               cell.cellStyle = isMultiline ? styles.multiline : styles.centered;
-              sizingTracker.update(currentRow - 1, columnIndex, value);
+              if (header == 'Số tiền' || header == 'Tiền cọc' || header == 'Tiền COD') {
+                sizingTracker.update(currentRow - 1, columnIndex, cell.value.toString());
+              } else {
+                sizingTracker.update(currentRow - 1, columnIndex, cell.value?.toString() ?? '');
+              }
             }
 
             currentRow++;
           }
         } else {
-          final rowValues = [
-            type,
-            createdAt,
-            productName != 'Không xác định' ? productName : '',
-            '',
-            totalAmount.toString(),
-            currency,
-            customerPriceTotalValue > 0 ? customerPriceTotalValue.toString() : '',
-            transporterPriceTotalValue > 0 ? transporterPriceTotalValue.toString() : '',
-          ];
-
           for (int columnIndex = 0; columnIndex < columnCount; columnIndex++) {
             final cell = sheet.cell(
               CellIndex.indexByColumnRow(
@@ -846,25 +846,47 @@ class _TransporterDetailsDialogState extends State<TransporterDetailsDialog> {
               ),
             );
             final header = headers[columnIndex];
-            final value = rowValues[columnIndex];
             final isMultiline = columnIndex == 3;
             
             // Xác định loại cell value dựa trên header
-            if (header == 'Số tiền' || header == 'Tiền cọc' || header == 'Tiền COD') {
-              // Cột số tiền - số thực
-              if (value.isNotEmpty && value != '') {
-                final doubleValue = double.tryParse(value);
-                cell.value = doubleValue != null ? DoubleCellValue(doubleValue) : TextCellValue(value);
+            if (header == 'Loại giao dịch') {
+              cell.value = TextCellValue(type);
+            } else if (header == 'Ngày') {
+              cell.value = TextCellValue(createdAt);
+            } else if (header == 'Sản phẩm') {
+              cell.value = TextCellValue(productName != 'Không xác định' ? productName : '');
+            } else if (header == 'IMEI') {
+              cell.value = TextCellValue('');
+            } else if (header == 'Số tiền') {
+              // ✅ Dùng trực tiếp giá trị num thay vì toString() để tránh format sai
+              final totalAmountValue = totalAmount.toDouble();
+              cell.value = DoubleCellValue(totalAmountValue);
+            } else if (header == 'Đơn vị tiền') {
+              cell.value = TextCellValue(currency);
+            } else if (header == 'Tiền cọc') {
+              if (customerPriceTotalValue > 0) {
+                final customerPriceValue = customerPriceTotalValue.toDouble();
+                cell.value = DoubleCellValue(customerPriceValue);
+              } else {
+                cell.value = TextCellValue('');
+              }
+            } else if (header == 'Tiền COD') {
+              if (transporterPriceTotalValue > 0) {
+                final transporterPriceValue = transporterPriceTotalValue.toDouble();
+                cell.value = DoubleCellValue(transporterPriceValue);
               } else {
                 cell.value = TextCellValue('');
               }
             } else {
-              // Cột text
-              cell.value = TextCellValue(value);
+              cell.value = TextCellValue('');
             }
             
             cell.cellStyle = isMultiline ? styles.multiline : styles.centered;
-            sizingTracker.update(currentRow - 1, columnIndex, value);
+            if (header == 'Số tiền' || header == 'Tiền cọc' || header == 'Tiền COD') {
+              sizingTracker.update(currentRow - 1, columnIndex, cell.value.toString());
+            } else {
+              sizingTracker.update(currentRow - 1, columnIndex, cell.value?.toString() ?? '');
+            }
           }
 
           currentRow++;

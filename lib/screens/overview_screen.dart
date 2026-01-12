@@ -121,9 +121,33 @@ class _OverviewScreenState extends State<OverviewScreen> with SingleTickerProvid
   // Thêm hàm khởi tạo cache nếu chưa có — sửa lỗi line đỏ khi gọi _initCaches()
   Future<void> _initCaches() async {
     try {
-      // Nếu GlobalCacheManager đã có dữ liệu, lấy danh sách tên kho để hiển thị
+      // Kiểm tra cache trước
       final warehouseMap = CacheUtil.warehouseNameCache;
-      final names = warehouseMap.values.toList();
+      List<String> names = warehouseMap.values.toList();
+      
+      // Nếu cache trống, fetch trực tiếp từ database
+      if (names.isEmpty) {
+        try {
+          final warehouseResponse = await widget.tenantClient.from('warehouses').select('id, name');
+          names = warehouseResponse
+              .map((e) => e['name'] as String?)
+              .whereType<String>()
+              .toList()
+            ..sort();
+          
+          // Cập nhật cache
+          for (var warehouse in warehouseResponse) {
+            final id = warehouse['id']?.toString();
+            final name = warehouse['name'] as String?;
+            if (id != null && name != null) {
+              CacheUtil.cacheWarehouseName(id, name);
+            }
+          }
+        } catch (e) {
+          print('Error fetching warehouses: $e');
+        }
+      }
+      
       setState(() {
         _warehouseOptions = ['Tất cả chi nhánh', ...names];
         // đảm bảo _selectedWarehouse hợp lệ

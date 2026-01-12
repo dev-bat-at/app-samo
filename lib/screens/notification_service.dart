@@ -9,7 +9,7 @@ import '../helpers/telegram_service.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin
-      _flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+  _flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
   static bool _isAppInForeground = true;
   static late SupabaseClient _tenantClient;
   static String? _tenantUrl;
@@ -35,13 +35,13 @@ class NotificationService {
     tz.setLocalLocation(vietnam);
 
     // Request notification permissions first
-    final NotificationSettings settings =
-        await FirebaseMessaging.instance.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-      provisional: false,
-    );
+    final NotificationSettings settings = await FirebaseMessaging.instance
+        .requestPermission(
+          alert: true,
+          badge: true,
+          sound: true,
+          provisional: false,
+        );
     print('User granted permission: ${settings.authorizationStatus}');
 
     // Set up foreground message handling
@@ -78,18 +78,18 @@ class NotificationService {
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const DarwinInitializationSettings initializationSettingsIOS =
         DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-      defaultPresentAlert: true,
-      defaultPresentBadge: true,
-      defaultPresentSound: true,
-    );
+          requestAlertPermission: true,
+          requestBadgePermission: true,
+          requestSoundPermission: true,
+          defaultPresentAlert: true,
+          defaultPresentBadge: true,
+          defaultPresentSound: true,
+        );
     const InitializationSettings initializationSettings =
         InitializationSettings(
-      android: initializationSettingsAndroid,
-      iOS: initializationSettingsIOS,
-    );
+          android: initializationSettingsAndroid,
+          iOS: initializationSettingsIOS,
+        );
 
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'high_importance_channel',
@@ -104,7 +104,8 @@ class NotificationService {
 
     await _flutterLocalNotificationsPlugin
         .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
+          AndroidFlutterLocalNotificationsPlugin
+        >()
         ?.createNotificationChannel(channel);
 
     await _flutterLocalNotificationsPlugin.initialize(
@@ -191,7 +192,8 @@ class NotificationService {
 
       if (_tenantUrl == null || _tenantAnonKey == null) {
         print(
-            'Error: Tenant credentials not set. Call NotificationService.init() first.');
+          'Error: Tenant credentials not set. Call NotificationService.init() first.',
+        );
         return;
       }
 
@@ -213,7 +215,8 @@ class NotificationService {
         print('Notification sent successfully: ${jsonEncode(result)}');
       } else {
         print(
-            'Error sending notification: ${response.status} - ${response.data}');
+          'Error sending notification: ${response.status} - ${response.data}',
+        );
       }
 
       // ✅ Không gửi Telegram ở đây vì các transaction đã có sendTransactionToTelegram riêng
@@ -232,7 +235,7 @@ class NotificationService {
     required String ticketId,
     // Thông tin đối tác (cho phiếu thu/chi)
     String?
-        partnerType, // Loại đối tác: customers, suppliers, fix_units, transporters
+    partnerType, // Loại đối tác: customers, suppliers, fix_units, transporters
     String? partnerName, // Tên đối tác
     // Thông tin hàng hóa (cho phiếu bán/nhập/trả)
     String? customer, // Khách hàng
@@ -300,42 +303,43 @@ class NotificationService {
     try {
       await FirebaseMessaging.instance
           .setForegroundNotificationPresentationOptions(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
+            alert: true,
+            badge: true,
+            sound: true,
+          );
 
       const AndroidNotificationDetails androidPlatformChannelSpecifics =
           AndroidNotificationDetails(
-        'high_importance_channel',
-        'High Importance Notifications',
-        channelDescription: 'This channel is used for important notifications.',
-        importance: Importance.max,
-        priority: Priority.high,
-        showWhen: true,
-        playSound: true,
-        enableVibration: true,
-        fullScreenIntent: true,
-        category: AndroidNotificationCategory.message,
-        visibility: NotificationVisibility.public,
-        ticker: 'New notification',
-        ongoing: false,
-        channelShowBadge: true,
-        autoCancel: true,
-        styleInformation: BigTextStyleInformation(''),
-      );
+            'high_importance_channel',
+            'High Importance Notifications',
+            channelDescription:
+                'This channel is used for important notifications.',
+            importance: Importance.max,
+            priority: Priority.high,
+            showWhen: true,
+            playSound: true,
+            enableVibration: true,
+            fullScreenIntent: true,
+            category: AndroidNotificationCategory.message,
+            visibility: NotificationVisibility.public,
+            ticker: 'New notification',
+            ongoing: false,
+            channelShowBadge: true,
+            autoCancel: true,
+            styleInformation: BigTextStyleInformation(''),
+          );
       const DarwinNotificationDetails iOSPlatformChannelSpecifics =
           DarwinNotificationDetails(
-        presentAlert: true,
-        presentBadge: true,
-        presentSound: true,
-        presentBanner: true,
-        presentList: true,
-        sound: 'default',
-        badgeNumber: 1,
-        interruptionLevel: InterruptionLevel.timeSensitive,
-        threadIdentifier: 'high_importance_channel',
-      );
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+            presentBanner: true,
+            presentList: true,
+            sound: 'default',
+            badgeNumber: 1,
+            interruptionLevel: InterruptionLevel.timeSensitive,
+            threadIdentifier: 'high_importance_channel',
+          );
       const NotificationDetails platformChannelSpecifics = NotificationDetails(
         android: androidPlatformChannelSpecifics,
         iOS: iOSPlatformChannelSpecifics,
@@ -377,6 +381,7 @@ class NotificationService {
       ),
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
+
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       matchDateTimeComponents: DateTimeComponents.time,
       payload: 'daily',
