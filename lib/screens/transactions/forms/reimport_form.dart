@@ -259,36 +259,6 @@ class _ReimportFormState extends State<ReimportForm> {
     });
   }
 
-  // ✅ Helper function: Kiểm tra lần bán gần nhất của IMEI có phải Ship COD không
-  Future<bool?> _checkLatestSaleIsShipCod(String imei) async {
-    try {
-      final supabase = widget.tenantClient;
-      // Query tất cả sale_orders có chứa IMEI này, sắp xếp theo thời gian gần nhất
-      final saleOrders = await supabase
-          .from('sale_orders')
-          .select('imei, account, created_at')
-          .eq('product_id', productId!)
-          .eq('iscancelled', false)
-          .like('imei', '%$imei%')
-          .order('created_at', ascending: false)
-          .limit(50); // Lấy nhiều để tìm chính xác IMEI
-
-      // Tìm sale_order chứa IMEI chính xác và gần nhất
-      for (var order in saleOrders) {
-        final imeiString = order['imei']?.toString() ?? '';
-        final imeiList = imeiString.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-        if (imeiList.contains(imei)) {
-          // Tìm thấy IMEI chính xác, kiểm tra account của lần bán này
-          return order['account'] == 'Ship COD';
-        }
-      }
-      return null; // Không tìm thấy sale_order
-    } catch (e) {
-      debugPrint('Lỗi khi kiểm tra lần bán gần nhất: $e');
-      return null;
-    }
-  }
-
   Future<void> _fetchAvailableImeis(String query) async {
     if (productId == null) {
       setState(() {
@@ -323,33 +293,29 @@ class _ReimportFormState extends State<ReimportForm> {
         }
       }
 
-      // ✅ Filter: chỉ giữ lại IMEI có lần bán gần nhất KHÔNG phải Ship COD và trạng thái hiện tại là "Đã bán"
+      // ✅ Filter: chỉ giữ lại IMEI có trạng thái hiện tại là "Đã bán" (chưa nhập lại)
       final List<String> validImeis = [];
       for (var imei in imeiSet) {
-        final isShipCod = await _checkLatestSaleIsShipCod(imei);
-        if (isShipCod == false) {
-          // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Đã bán" (chưa nhập lại)
-          try {
-            final productStatusCheck = await supabase
-                .from('products')
-                .select('status')
-                .eq('imei', imei)
-                .eq('product_id', productId!)
-                .maybeSingle();
-            
-            if (productStatusCheck != null) {
-              final currentStatus = productStatusCheck['status']?.toString();
-              if (currentStatus == 'Đã bán') {
-                // Lần bán gần nhất không phải Ship COD và trạng thái hiện tại là "Đã bán" → hợp lệ cho phiếu nhập lại hàng
-                validImeis.add(imei);
-              }
+        // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Đã bán" (chưa nhập lại)
+        try {
+          final productStatusCheck = await supabase
+              .from('products')
+              .select('status')
+              .eq('imei', imei)
+              .eq('product_id', productId!)
+              .maybeSingle();
+          
+          if (productStatusCheck != null) {
+            final currentStatus = productStatusCheck['status']?.toString();
+            if (currentStatus == 'Đã bán') {
+              // Trạng thái hiện tại là "Đã bán" → hợp lệ cho phiếu nhập lại hàng
+              validImeis.add(imei);
             }
-          } catch (e) {
-            debugPrint('Lỗi khi kiểm tra trạng thái sản phẩm cho IMEI $imei: $e');
-            // Bỏ qua IMEI này nếu có lỗi
           }
+        } catch (e) {
+          debugPrint('Lỗi khi kiểm tra trạng thái sản phẩm cho IMEI $imei: $e');
+          // Bỏ qua IMEI này nếu có lỗi
         }
-        // Nếu isShipCod == true hoặc null, bỏ qua IMEI này
       }
 
       final imeiListFromDb = validImeis..sort();
@@ -418,35 +384,12 @@ class _ReimportFormState extends State<ReimportForm> {
 
     try {
       final supabase = widget.tenantClient;
-      // ✅ Kiểm tra lần bán gần nhất của IMEI
-      final isLatestSaleShipCod = await _checkLatestSaleIsShipCod(input);
-      
-      if (isLatestSaleShipCod == true) {
-        final error = 'IMEI "$input" có lần bán gần nhất là Ship COD, vui lòng sử dụng phiếu COD Hoàn Hàng để nhập lại!';
-        setState(() {
-          imeiError = error;
-        });
-        await _showImeiErrorDialog(error);
-        return;
-      }
-      
-      if (isLatestSaleShipCod == null) {
-        final error = 'Không tìm thấy giao dịch bán cho IMEI "$input"!';
-        setState(() {
-          imeiError = error;
-        });
-        await _showImeiErrorDialog(error);
-        return;
-      }
-
-      // ✅ Lần bán gần nhất không phải Ship COD → hợp lệ
-      // Query sale_order gần nhất (không Ship COD) để lấy thông tin
+      // ✅ Query sale_order gần nhất (bao gồm cả Ship COD) để lấy thông tin
       final saleOrdersResponse = await retry(
         () => supabase
             .from('sale_orders')
             .select('customer, customer_id, price, currency, account, imei')
             .eq('product_id', productId!)
-            .neq('account', 'Ship COD') // ✅ Loại trừ Ship COD
             .eq('iscancelled', false)
             .like('imei', '%$input%')
             .order('created_at', ascending: false)
@@ -466,7 +409,7 @@ class _ReimportFormState extends State<ReimportForm> {
       }
 
       if (matchedOrder == null) {
-        final error = 'Không tìm thấy giao dịch bán bình thường cho IMEI "$input"!';
+        final error = 'Không tìm thấy giao dịch bán cho IMEI "$input"!';
         setState(() {
           imeiError = error;
         });
@@ -527,11 +470,12 @@ class _ReimportFormState extends State<ReimportForm> {
 
       print('Product data for IMEI $input: $productResponse');
 
-      final response = matchedOrder; // ✅ response không thể null ở đây
-      final price = response['price'] != null
-          ? (response['price'] is num
-              ? (response['price'] as num).toDouble()
-              : double.tryParse(response['price'].toString()) ?? 0.0)
+      // ✅ matchedOrder không thể null ở đây vì đã kiểm tra ở trên
+      final order = matchedOrder;
+      final price = order['price'] != null
+          ? (order['price'] is num
+              ? (order['price'] as num).toDouble()
+              : double.tryParse(order['price'].toString()) ?? 0.0)
           : 0.0;
 
       final customerPrice = productResponse['customer_price'] != null
@@ -555,7 +499,7 @@ class _ReimportFormState extends State<ReimportForm> {
       print('- Transporter price: $transporterPrice');
       print('- Sale date: $saleDate');
 
-      final currency = response['currency'] as String? ?? 'VND';
+      final currency = order['currency'] as String? ?? 'VND';
 
       if (price == 0) {
         final error = 'Giá bán của IMEI "$input" không hợp lệ!';
@@ -566,18 +510,22 @@ class _ReimportFormState extends State<ReimportForm> {
         return;
       }
 
-      // Lấy customer_id từ response hoặc tra cứu từ customerIdMap
+      // Lấy customer_id từ order hoặc tra cứu từ customerIdMap
       String? customerId;
-      final customerIdFromResponse = response['customer_id'];
-      if (customerIdFromResponse != null) {
-        customerId = customerIdFromResponse.toString();
+      final customerIdFromOrder = order['customer_id'];
+      if (customerIdFromOrder != null) {
+        customerId = customerIdFromOrder.toString();
       } else {
         // Fallback: tra cứu từ customerIdMap dựa trên tên (cho backward compatibility)
-        final customerName = response['customer'] as String?;
+        final customerName = order['customer'] as String?;
         if (customerName != null) {
           customerId = customerIdMap[customerName];
         }
       }
+
+      // ✅ Xác định có phải Ship COD không dựa trên account của sale_order
+      final accountValue = order['account'] as String?;
+      final isCod = accountValue == 'Ship COD';
 
       if (mounted) {
         setState(() {
@@ -585,8 +533,8 @@ class _ReimportFormState extends State<ReimportForm> {
             'imei': input,
             'product_id': productId,
             'product_name': CacheUtil.getProductName(productId),
-            'isCod': false, // ✅ Phiếu nhập lại hàng không có Ship COD
-            'customer': response['customer'] as String? ?? 'Không xác định',
+            'isCod': isCod, // ✅ Xác định dựa trên account của sale_order
+            'customer': order['customer'] as String? ?? 'Không xác định',
             'customer_id': customerId, // ✅ Lưu customer_id thay vì chỉ lưu tên
             'customer_price': customerPrice,
             'transporter_price': transporterPrice,
@@ -796,8 +744,7 @@ class _ReimportFormState extends State<ReimportForm> {
       var query = supabase
           .from('sale_orders')
           .select('imei, customer, customer_id, transporter, price, currency, account, quantity')
-          .eq('product_id', productId!)
-          .neq('account', 'Ship COD'); // ✅ Phiếu nhập lại hàng: chỉ lấy đơn bán bình thường (không Ship COD)
+          .eq('product_id', productId!); // ✅ Lấy tất cả đơn bán (bao gồm cả Ship COD)
 
       final customerId = customerIdMap[cust];
       if (customerId != null) {
@@ -828,17 +775,6 @@ class _ReimportFormState extends State<ReimportForm> {
           // Check for duplicates in both addedItems and allItems
           if (await _checkDuplicateImeis(individualImei) != null) continue;
           if (allItems.any((item) => item['imei'] == individualImei)) continue;
-          
-          // ✅ Kiểm tra lần bán gần nhất của IMEI
-          final isLatestSaleShipCod = await _checkLatestSaleIsShipCod(individualImei);
-          if (isLatestSaleShipCod == true) {
-            print('Skipping IMEI $individualImei: Latest sale is Ship COD');
-            continue;
-          }
-          if (isLatestSaleShipCod == null) {
-            print('Skipping IMEI $individualImei: No sale order found');
-            continue;
-          }
           
           // ✅ Kiểm tra trạng thái hiện tại của sản phẩm phải là "Đã bán" (chưa nhập lại)
           try {
@@ -922,6 +858,10 @@ class _ReimportFormState extends State<ReimportForm> {
               }
             }
 
+            // ✅ Xác định có phải Ship COD không dựa trên account của sale_order
+            final accountValue = item['account'] as String?;
+            final isCod = accountValue == 'Ship COD';
+
             allItems.add({
               'imei': individualImei,
               'product_id': productId,
@@ -934,7 +874,7 @@ class _ReimportFormState extends State<ReimportForm> {
               'sale_price': perItemPrice,
               'sale_currency': item['currency'] as String? ?? 'VND',
               'reimport_price': null,
-              'isCod': false, // ✅ Phiếu nhập lại hàng không có Ship COD
+              'isCod': isCod, // ✅ Xác định dựa trên account của sale_order
               'sale_date': saleDate,
             });
           } catch (e) {
