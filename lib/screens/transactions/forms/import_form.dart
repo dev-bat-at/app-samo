@@ -59,42 +59,6 @@ class ThousandsFormatterLocal extends TextInputFormatter {
   }
 }
 
-// ✅ Formatter để loại bỏ khoảng trắng và dấu cách trong IMEI
-class ImeiInputFormatter extends TextInputFormatter {
-  @override
-  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
-    // Nếu không có thay đổi, giữ nguyên
-    if (oldValue.text == newValue.text) return newValue;
-    
-    // Chia thành các dòng
-    final lines = newValue.text.split('\n');
-    
-    // Xử lý từng dòng: loại bỏ tất cả khoảng trắng và trim
-    final processedLines = lines.map((line) {
-      // Loại bỏ tất cả khoảng trắng (space) và tab
-      return line.replaceAll(RegExp(r'\s+'), '').trim();
-    }).toList();
-    
-    // Nối lại các dòng
-    final processedText = processedLines.join('\n');
-    
-    // Tính toán vị trí cursor mới
-    int newOffset = newValue.selection.baseOffset;
-    if (processedText.length < oldValue.text.length) {
-      // Nếu text ngắn hơn, điều chỉnh cursor
-      final removedChars = oldValue.text.length - processedText.length;
-      newOffset = (newOffset - removedChars).clamp(0, processedText.length);
-    } else {
-      newOffset = newOffset.clamp(0, processedText.length);
-    }
-    
-    return TextEditingValue(
-      text: processedText,
-      selection: TextSelection.collapsed(offset: newOffset),
-    );
-  }
-}
-
 String generateTicketId() {
   final now = DateTime.now();
   final dateFormat = DateFormat('yyyyMMdd-HHmmss');
@@ -529,11 +493,11 @@ class _ImportFormState extends State<ImportForm> {
         
         final duplicateError = _checkDuplicateImeis(currentImei);
         if (duplicateError != null) {
-        setState(() {
+          setState(() {
             imei = currentImei;
             imeiController.text = currentImei;
             imeiError = duplicateError;
-        });
+          });
           await _showImeiErrorDialog(duplicateError);
           return;
         }
@@ -594,11 +558,11 @@ class _ImportFormState extends State<ImportForm> {
         
         final duplicateError = _checkDuplicateImeis(currentImei);
         if (duplicateError != null) {
-        setState(() {
+          setState(() {
             imei = currentImei;
             imeiController.text = currentImei;
             imeiError = duplicateError;
-        });
+          });
           await _showImeiErrorDialog(duplicateError);
           return;
         }
@@ -1948,7 +1912,6 @@ class _ImportFormState extends State<ImportForm> {
                       child: TextFormField(
                         controller: imeiController,
                         maxLines: null,
-                        inputFormatters: [ImeiInputFormatter()], // ✅ Tự động loại bỏ khoảng trắng
                         onChanged: (val) {
                           setState(() {
                             imei = val;
@@ -1967,7 +1930,7 @@ class _ImportFormState extends State<ImportForm> {
                           }
                         },
                         onEditingComplete: () {
-                          // ✅ Normalize IMEI khi user hoàn thành nhập (trim từng dòng và loại bỏ dòng trống)
+                          // ✅ Normalize IMEI khi user hoàn thành nhập (trim từng dòng)
                           final currentText = imeiController.text;
                           final normalizedLines = currentText.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
                           final normalizedText = normalizedLines.join('\n');

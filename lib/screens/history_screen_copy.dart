@@ -535,6 +535,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
     developer.log('fetchTickets: Paginated: $paginated, selectedFilterTypes: $selectedFilterTypes');
     List<Map<String, dynamic>> allTickets = [];
     final ticketIds = <String>{};
+    
+    // ✅ Xác định có cần pagination không (chỉ khi không có filter thời gian và filter loại phiếu là 'all')
+    final shouldPaginate = paginated && selectedFilterTypes.contains('all') && dateFrom == null && dateTo == null;
 
     final hasTransportPermission = widget.permissions.contains('access_transfer_global_form') ||
         widget.permissions.contains('access_transfer_local_form') ||
@@ -654,15 +657,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
         }
         query = query.order(dateField, ascending: false);
 
-        if (paginated && selectedFilterTypes.contains('all') && dateFrom == null && dateTo == null) {
-          final start = currentPage * pageSize;
-          final end = start + pageSize - 1;
-          response = await query.range(start, end);
-          developer.log('fetchTickets: Fetched ${response.length} from $tableName (paginated)');
-        } else {
+        // ✅ Luôn fetch tất cả từ mỗi bảng (không paginate ở level bảng)
+        // Pagination sẽ được thực hiện sau khi gộp tất cả tickets từ các bảng
           response = await query;
           developer.log('fetchTickets: Fetched ${response.length} from $tableName');
-          }
         } catch (e) {
           // Nếu lỗi (có thể do cột note không tồn tại), thử lại không có note
           developer.log('fetchTickets: Error with note column for $tableName, retrying without note: $e');
@@ -679,15 +677,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
           }
           query = query.order(dateField, ascending: false);
 
-          if (paginated && selectedFilterTypes.contains('all') && dateFrom == null && dateTo == null) {
-            final start = currentPage * pageSize;
-            final end = start + pageSize - 1;
-            response = await query.range(start, end);
-            developer.log('fetchTickets: Fetched ${response.length} from $tableName without note (paginated)');
-          } else {
+          // ✅ Luôn fetch tất cả từ mỗi bảng (không paginate ở level bảng)
             response = await query;
             developer.log('fetchTickets: Fetched ${response.length} from $tableName without note');
-          }
         }
 
         final groupedTickets = <String, Map<String, dynamic>>{};
@@ -903,12 +895,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
         final snapshotMap = <String, Map<String, dynamic>>{};
         for (var snapshot in snapshotResponse) {
-          final key = '${snapshot['ticket_table']}:${snapshot['ticket_id']}';
+          // ✅ Đảm bảo ticket_id được convert sang string để match với ticket['id']
+          final ticketId = snapshot['ticket_id']?.toString() ?? '';
+          final ticketTable = snapshot['ticket_table']?.toString() ?? '';
+          final key = '$ticketTable:$ticketId';
           snapshotMap[key] = snapshot;
         }
 
         for (var ticket in allTickets) {
-          final snapshot = snapshotMap['${ticket['table']}:${ticket['id']}'];
+          // ✅ Đảm bảo ticket['id'] được convert sang string để match với snapshot
+          final ticketId = ticket['id']?.toString() ?? '';
+          final ticketTable = ticket['table']?.toString() ?? '';
+          final snapshot = snapshotMap['$ticketTable:$ticketId'];
           ticket['snapshot_data'] = snapshot?['snapshot_data'] ?? {};
           ticket['snapshot_created_at'] = snapshot?['created_at'];
         }
@@ -930,6 +928,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
       final dateB = DateTime.tryParse(b['date']?.toString() ?? '1900-01-01') ?? DateTime(1900);
       return dateB.compareTo(dateA);
     });
+
+    // ✅ Áp dụng pagination ở level tickets đã gộp (sau khi filter và sort)
+    if (shouldPaginate) {
+      final start = currentPage * pageSize;
+      final end = start + pageSize;
+      final paginatedTickets = allTickets.length > start 
+          ? allTickets.sublist(start, end > allTickets.length ? allTickets.length : end)
+          : <Map<String, dynamic>>[];
+      developer.log('fetchTickets: Paginated tickets: ${paginatedTickets.length} from total ${allTickets.length}');
+      return paginatedTickets;
+    }
 
     return allTickets;
   }
@@ -1532,11 +1541,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
       developer.log('isLatestTicket: Checking ticket_id: $ticketId in table: $table, keyField: $keyField');
 
       // Kiểm tra snapshot tồn tại cho phiếu cần hủy
+      // ✅ Convert ticketId sang string để match với ticket_id trong snapshots (có thể là UUID hoặc TEXT)
       final snapshot = await widget.tenantClient
           .from('snapshots')
           .select('ticket_id, ticket_table, created_at')
-          .eq('ticket_id', ticketId)
-          .eq('ticket_table', table)
+          .eq('ticket_id', ticketId.toString())
+          .eq('ticket_table', table.toString())
           .limit(1)
           .maybeSingle();
 
@@ -1653,10 +1663,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
                   // Xóa snapshot
                   developer.log('confirmCancelTicket: Deleting snapshot for ticket_id: $ticketId');
+                  // ✅ Convert ticketId sang string để match với ticket_id trong snapshots
                   await widget.tenantClient
                       .from('snapshots')
                       .delete()
-                      .eq('ticket_id', ticketId)
+                      .eq('ticket_id', ticketId.toString())
                       .eq('ticket_table', table);
                   developer.log('confirmCancelTicket: Snapshot deleted for ticket_id: $ticketId');
 
@@ -2163,7 +2174,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
           final quantity = tableName == 'transporter_orders'
               ? (item['imei'] != null ? (item['imei'] as String).split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).length : 0)
               : (num.tryParse((item['quantity'] ?? 0).toString())?.toInt() ?? 0);
-          final amountValue = num.tryParse(amount.toString())?.toDouble() ?? 0.0;
+          // ✅ Dùng trực tiếp giá trị num thay vì toString() để tránh format sai
+          final amountValue = amount is num ? amount.toDouble() : (num.tryParse(amount.toString())?.toDouble() ?? 0.0);
           final totalAmount = amountValue * quantity;
 
           // Tạo danh sách cell values với đúng kiểu dữ liệu
@@ -2190,17 +2202,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
             excel.TextCellValue(toAccount),
             // Tiền cọc (index 13) - số thực
             (isShipCodItem || isCodHoanItem) && item['customer_price'] != null
-                ? excel.DoubleCellValue(num.tryParse(item['customer_price'].toString())?.toDouble() ?? 0.0)
+                ? excel.DoubleCellValue((item['customer_price'] as num).toDouble())
                 : excel.TextCellValue(''),
             // Tiền COD (index 14) - số thực
             (isShipCodItem || isCodHoanItem) && item['transporter_price'] != null
-                ? excel.DoubleCellValue(num.tryParse(item['transporter_price'].toString())?.toDouble() ?? 0.0)
+                ? excel.DoubleCellValue((item['transporter_price'] as num).toDouble())
                 : excel.TextCellValue(''),
             excel.TextCellValue(transporterName),
             excel.TextCellValue(saleman),
-            // Doanh số nhân viên (index 14) - số thực
+            // Doanh số nhân viên (index 17) - số thực
             item['doanhso'] != null && item['doanhso'] != 0
-                ? excel.DoubleCellValue(num.tryParse(item['doanhso'].toString())?.toDouble() ?? 0.0)
+                ? excel.DoubleCellValue((item['doanhso'] as num).toDouble())
                 : excel.TextCellValue(''),
             excel.TextCellValue(note),
           ];

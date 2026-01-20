@@ -177,12 +177,7 @@ class _ExchangeFormState extends State<ExchangeForm> {
       return;
     }
 
-    Map<String, dynamic> rateData = {};
-    if (fromCurrency == 'VND' && toCurrency == 'CNY') {
-      rateData = {'rate_vnd_cny': rate};
-    } else if (fromCurrency == 'VND' && toCurrency == 'USD') {
-      rateData = {'rate_vnd_usd': rate};
-    } else {
+    if (fromCurrency != 'VND' || (toCurrency != 'CNY' && toCurrency != 'USD')) {
       _showErrorDialog('Chỉ hỗ trợ đổi từ VND sang CNY hoặc USD');
       return;
     }
@@ -221,7 +216,6 @@ class _ExchangeFormState extends State<ExchangeForm> {
                     fromAcc,
                     toAcc,
                     fromBalance,
-                    rateData,
                   );
                 },
                 child: const Text('Tạo phiếu'),
@@ -235,27 +229,12 @@ class _ExchangeFormState extends State<ExchangeForm> {
     Map<String, dynamic> fromAcc,
     Map<String, dynamic> toAcc,
     num fromBalance,
-    Map<String, dynamic> rateData,
   ) async {
     try {
       if (fromAccountName == null || toAccountName == null) {
         _showErrorDialog('Tài khoản không hợp lệ');
         return;
       }
-
-      final fromAccountData =
-          await widget.tenantClient
-              .from('financial_accounts')
-              .select()
-              .eq('name', fromAccountName!)
-              .single();
-
-      final toAccountData =
-          await widget.tenantClient
-              .from('financial_accounts')
-              .select()
-              .eq('name', toAccountName!)
-              .single();
 
       final now = DateTime.now();
       final ticketId = uuid.v4();
@@ -268,22 +247,77 @@ class _ExchangeFormState extends State<ExchangeForm> {
       final fromCurrency = fromAcc['currency'] ?? '';
       final toCurrency = toAcc['currency'] ?? '';
 
+      // ✅ Tính tỉ giá để lưu vào database
+      // Tỉ giá = số VND cần để đổi 1 đơn vị ngoại tệ (CNY hoặc USD)
+      // Ví dụ: 1 CNY = 3500 VND → rate = 3500
+      num? rateVndCny;
+      num? rateVndUsd;
+      if (fromCurrency == 'VND' && toCurrency == 'CNY') {
+        // Tỉ giá VND -> CNY: số VND cần để đổi 1 CNY
+        // rate = amount / receiveAmount (ví dụ: 3500000 VND / 1000 CNY = 3500)
+        if (rate > 0) {
+          rateVndCny = rate;
+        } else if (receiveAmount > 0) {
+          rateVndCny = amount / receiveAmount;
+        } else {
+          rateVndCny = null;
+        }
+        print('💰 Exchange: Setting rate_vnd_cny = $rateVndCny (rate input: $rate, from $amount VND to $receiveAmount CNY)');
+      } else if (fromCurrency == 'VND' && toCurrency == 'USD') {
+        // Tỉ giá VND -> USD: số VND cần để đổi 1 USD
+        // rate = amount / receiveAmount (ví dụ: 25000000 VND / 1000 USD = 25000)
+        if (rate > 0) {
+          rateVndUsd = rate;
+        } else if (receiveAmount > 0) {
+          rateVndUsd = amount / receiveAmount;
+        } else {
+          rateVndUsd = null;
+        }
+        print('💰 Exchange: Setting rate_vnd_usd = $rateVndUsd (rate input: $rate, from $amount VND to $receiveAmount USD)');
+      }
+
+      // ✅ Debug: Log tỉ giá trước khi gọi RPC
+      print('🔍 DEBUG: Exchange transaction params:');
+      print('  from_currency: $fromCurrency, to_currency: $toCurrency');
+      print('  rate (input): $rate');
+      print('  rate_vnd_cny: $rateVndCny');
+      print('  rate_vnd_usd: $rateVndUsd');
+      print('  from_amount: $amount, to_amount: $receiveAmount');
+
+      // ✅ Chuẩn bị params cho RPC - đảm bảo null được truyền đúng
+      final rpcParams = <String, dynamic>{
+        'p_ticket_id': ticketId,
+        'p_from_account': fromAccountName!,
+        'p_to_account': toAccountName!,
+        'p_from_amount': amount,
+        'p_to_amount': receiveAmount,
+        'p_from_currency': fromCurrency,
+        'p_to_currency': toCurrency,
+        'p_note': note ?? '',
+        'p_from_balance_change': fromBalanceChange,
+        'p_to_balance_change': toBalanceChange,
+        'p_snapshot_data': snapshotData,
+        'p_created_at': now.toIso8601String(),
+      };
+      
+      // ✅ Chỉ thêm rate parameters (có thể null)
+      if (rateVndCny != null) {
+        rpcParams['p_rate_vnd_cny'] = rateVndCny;
+      } else {
+        rpcParams['p_rate_vnd_cny'] = null;
+      }
+      
+      if (rateVndUsd != null) {
+        rpcParams['p_rate_vnd_usd'] = rateVndUsd;
+      } else {
+        rpcParams['p_rate_vnd_usd'] = null;
+      }
+
+      print('🔍 DEBUG: RPC params with rates: rate_vnd_cny=${rpcParams['p_rate_vnd_cny']}, rate_vnd_usd=${rpcParams['p_rate_vnd_usd']}');
+
       // ✅ CALL RPC FUNCTION - All operations in ONE atomic transaction
       final result = await _retry(
-        () => widget.tenantClient.rpc('create_exchange_transaction', params: {
-          'p_ticket_id': ticketId,
-          'p_from_account': fromAccountName!,
-          'p_to_account': toAccountName!,
-          'p_from_amount': amount,
-          'p_to_amount': receiveAmount,
-          'p_from_currency': fromCurrency,
-          'p_to_currency': toCurrency,
-          'p_note': note ?? '',
-          'p_from_balance_change': fromBalanceChange,
-          'p_to_balance_change': toBalanceChange,
-          'p_snapshot_data': snapshotData,
-          'p_created_at': now.toIso8601String(),
-        }),
+        () => widget.tenantClient.rpc('create_exchange_transaction', params: rpcParams),
         operation: 'Create exchange transaction (RPC)',
       );
 
@@ -391,23 +425,6 @@ class _ExchangeFormState extends State<ExchangeForm> {
       title: 'Lỗi',
       error: message,
       showRetry: false,
-    );
-  }
-
-  void _showErrorDialogOld(String message) {
-    showDialog(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Thông báo'),
-            content: Text(message),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Đóng'),
-              ),
-            ],
-          ),
     );
   }
 
